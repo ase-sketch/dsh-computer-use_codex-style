@@ -1,0 +1,123 @@
+{
+  "name": "dsh-computer-use",
+  "version": "0.1.0",
+  "codexBaseline": "26.903.61454",
+  "description": "Windows Computer Use for DeepSeek Harness: the official window2 13-method surface plus a skill-gated Chromium browser catalog. Codex is not required.",
+  "modelDescription": "Drive Windows desktop apps and Chromium tabs through the DeepSeek Harness Computer Use tools. Use the computer-use skill before controlling the desktop and the computer-use-browser skill before any tab_* work. Never use the Windows key or any shortcut involving it. Do not automate terminals, password managers, security tools, or authentication dialogs. Do not drive the desktop through pwsh, Start-Process, SendKeys, OCR, or screenshot scripts: the get_window_state image is the vision channel.",
+  "author": {
+    "name": "DeepSeek Harness"
+  },
+  "license": "MIT",
+  "keywords": [
+    "computer-use",
+    "desktop-control",
+    "windows",
+    "automation",
+    "window2",
+    "ui-automation"
+  ],
+  "capabilities": [
+    "Interactive",
+    "Read",
+    "Write"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Computer Use",
+    "shortDescription": "Control Windows apps",
+    "longDescription": "Computer Use lets the agent operate Windows desktop apps and Chromium tabs: it observes windows with screenshots and an accessibility tree, then clicks, types, scrolls, drags and sets values with real input. Apps are gated by an allow list and an approval prompt.",
+    "developerName": "DeepSeek Harness",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "brandColor": "#2563EB",
+    "defaultPrompt": [
+      "Open Notepad and turn these bullets into a clean draft",
+      "Build and run the project I already have open in Visual Studio",
+      "Test my checkout flow on localhost"
+    ],
+    "screenshots": []
+  },
+  "hooks": {
+    "Stop": "session/event:turn/end",
+    "Interrupt": "session/event:turn/end",
+    "SubagentStop": "session/event:turn/end"
+  },
+  "serverInstructions": "UI automation through the DeepSeek Harness Computer Use tools using the initialized session. Codex is not required.",
+  "tools": {
+    "enabled": [
+      "list_windows",
+      "get_window",
+      "list_apps",
+      "launch_app",
+      "get_window_state",
+      "click",
+      "press_key",
+      "type_text",
+      "scroll",
+      "set_value",
+      "drag",
+      "perform_secondary_action",
+      "activate_window",
+      "batch_actions"
+    ],
+    "diagnostic": [
+      "session_note",
+      "session_state",
+      "diagnostic_state",
+      "end_turn"
+    ],
+    "startup_timeout_ms": 120000,
+    "request_timeout_ms": 10000,
+    "launch_app_timeout_ms": 15000,
+    "output_token_limit": 25000,
+    "omitFrom": [
+      "code_mode",
+      "deferred"
+    ],
+    "env_allowlist": [
+      "PATH",
+      "PATHEXT",
+      "SystemRoot",
+      "SystemDrive",
+      "windir",
+      "TEMP",
+      "TMP",
+      "USERPROFILE",
+      "HOMEDRIVE",
+      "HOMEPATH",
+      "HOME",
+      "LOCALAPPDATA",
+      "APPDATA",
+      "PROGRAMDATA",
+      "PROGRAMFILES",
+      "ProgramW6432",
+      "ProgramFiles(x86)",
+      "COMMONPROGRAMFILES",
+      "COMMONPROGRAMFILES(X86)",
+      "NUMBER_OF_PROCESSORS",
+      "PROCESSOR_ARCHITECTURE",
+      "PROCESSOR_IDENTIFIER",
+      "COMSPEC",
+      "COMPUTERNAME",
+      "USERNAME",
+      "USERDOMAIN",
+      "SESSIONNAME",
+      "OS",
+      "PYTHON",
+      "PYTHONPATH",
+      "PYTHONHOME",
+      "PYTHONIOENCODING",
+      "PYTHONUTF8",
+      "CODEX_HOME",
+      "DSH_HOME"
+    ],
+    "approval": {
+      "default": "prompt",
+      "tools": {}
+    }
+  }
+}

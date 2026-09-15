@@ -1,0 +1,19 @@
+[project]
+name = "computer-use"
+version = "0.1.0"
+description = "LLM-agnostic Computer Use driver reconstructed from Codex window2 + helper protocol"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+computer-use = "computer_use.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["computer_use*"]
+
+[tool.setuptools.package-data]
+computer_use = ["win_tree.ps1", "prompts/*.md", "chrome_extension/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

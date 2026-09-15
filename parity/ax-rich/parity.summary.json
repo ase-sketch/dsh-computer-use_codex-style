@@ -1,0 +1,60 @@
+{
+  "kind": "parity",
+  "when": "2026-09-14T16:32:14.133Z",
+  "official": {
+    "ok": true,
+    "window": {
+      "app": "process:C:\\repo\\parity\\ParityTarget.exe",
+      "id": 9243264,
+      "title": "Parity Target"
+    },
+    "stats": {
+      "lines": 11,
+      "bytes": 429,
+      "states": {},
+      "secondary": 1,
+      "descriptions": 0,
+      "values": 0,
+      "ids": 5,
+      "truncated": 0,
+      "misordered": 0,
+      "roles": {
+        "窗口": 1,
+        "文本": 1,
+        "编辑": 1,
+        "按钮": 4,
+        "标题栏": 1,
+        "菜单栏": 1,
+        "菜单项": 1
+      }
+    }
+  },
+  "ours": {
+    "ok": true,
+    "window": {
+      "app": "process:C:\\repo\\parity\\ParityTarget.exe",
+      "id": 9243264,
+      "title": "Parity Target"
+    },
+    "stats": {
+      "lines": 11,
+      "bytes": 429,
+      "states": {},
+      "secondary": 1,
+      "descriptions": 0,
+      "values": 0,
+      "ids": 5,
+      "truncated": 0,
+      "misordered": 0,
+      "roles": {
+        "窗口": 1,
+        "文本": 1,
+        "编辑": 1,
+        "按钮": 4,
+        "标题栏": 1,
+        "菜单栏": 1,
+        "菜单项": 1
+      }
+    }
+  }
+}

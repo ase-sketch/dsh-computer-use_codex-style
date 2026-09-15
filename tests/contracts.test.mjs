@@ -1,0 +1,595 @@
+/**
+ * Domain gates for the DSH Computer Use plugin plane.
+ *
+ * These are static or protocol-level: they need no desktop and no mouse. Run
+ * from the harness checkout so the plugin peer dependencies resolve:
+ *
+ *   cd <harness-checkout>
+ *   node --import tsx/esm --test tests/contracts.test.mjs
+ */
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import ComputerUseService, { Config as HostConfig, TURN_LIFECYCLE_HOOKS, SERVICE_CAPABILITIES, captureLimits } from '../src/index.js'
+import {
+  Config as ToolConfig,
+  apply as applyTools,
+  REQUIRED_DOCS,
+  normalizeApprovalRequest,
+  normalizeDocPath,
+  documentWasRead,
+  deriveAudioResult,
+  computerUseSectionOrder,
+} from '../src/tool.js'
+import {
+  computerUsePrompt,
+  promptAssetStatus,
+  ALWAYS_ON_FILES,
+  REQUIRED_PROMPT_FILES,
+  documentationSummary,
+  browserReferenceStatus,
+  BROWSER_REFERENCE_FILES,
+} from '../src/prompt.js'
+import { sanitizedEnvironment, waitSpawn, BASE_ENV_ALLOWLIST } from '../src/sidecar.js'
+
+// The bundle root IS the repository root (official layout: `package.json` +
+// `cordis.patch.yml` + entry modules at the package root, with the Rust helper and the
+// Python engine beside them), so the package root and the repo root are the same directory.
+const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const repoRoot = pluginRoot
+const source = name => fs.readFileSync(path.join(pluginRoot, 'src', name), 'utf8')
+
+const DESKTOP_13 = [
+  'list_windows', 'get_window', 'list_apps', 'launch_app', 'get_window_state', 'click',
+  'press_key', 'type_text', 'scroll', 'set_value', 'drag', 'perform_secondary_action', 'activate_window',
+].map(name => ({ name, description: name, parameters: { type: 'object', properties: {} } }))
+
+function makeHarness(options = {}) {
+  const handlers = new Map()
+  const registered = new Map()
+  const sections = []
+  const calls = []
+  const dshComputerUse = {
+    config: {},
+    approved: new Set(),
+    lastConversationId: null,
+    tools: async surface => {
+      if (surface === 'browser') return { tools: options.browserTools || [] }
+      if (surface === 'computer') return { tools: options.desktopTools || DESKTOP_13 }
+      const extras = [
+        { name: 'batch_actions', description: 'batch', parameters: {} },
+        { name: 'diagnostic_state', description: 'diag', parameters: {} },
+        { name: 'end_turn', description: 'end', parameters: {} },
+      ]
+      return { tools: DESKTOP_13.concat(extras) }
+    },
+    call: async (name, args, signal, meta) => {
+      calls.push({ name, args, meta })
+      if (options.onCall) return options.onCall(name, args, meta, calls.length)
+      return { ok: true, value: { called: name } }
+    },
+    health: async () => ({ ok: true, codexRequired: false, backend: 'fake', surface: 'computer' }),
+    releaseOverlay: async () => ({ ok: true }),
+    shutdownSidecar: async () => {},
+  }
+  const ctx = {
+    dshComputerUse,
+    on(event, fn) {
+      const list = handlers.get(event) || []
+      list.push(fn)
+      handlers.set(event, list)
+      return () => {}
+    },
+    effect(fn) { fn() },
+    get(name) {
+      if (name === 'approval') return options.approval
+      if (name === 'attachments') return options.attachments
+      return undefined
+    },
+    tools: { register(tool) { registered.set(tool.name, tool) } },
+    systemPrompt: { section(section) { sections.push(section) } },
+  }
+  return {
+    ctx,
+    dshComputerUse,
+    registered,
+    sections,
+    calls,
+    emitResult(exec, result) {
+      for (const fn of handlers.get('tools/result') || []) fn(exec, result)
+    },
+  }
+}
+
+test('C1 always-on prompt is the header only and within budget', () => {
+  const text = computerUsePrompt()
+  const header = fs.readFileSync(path.join(repoRoot, 'helper-rs', 'assets', 'prompts', 'dsh-header.md'), 'utf8').trim()
+  assert.equal(text, header, 'always-on text must be exactly dsh-header.md')
+  assert.ok(text.length <= 12288, 'always-on chars=' + text.length)
+  assert.deepEqual(ALWAYS_ON_FILES, ['dsh-header.md'])
+})
+
+test('C7 the always-on contract uses the centrally owned computer-use slot when it exists', () => {
+  // 0.1.6 added SECTION_ORDERS.TOOL_COMPUTER_USE next to the other tool contracts.
+  assert.equal(computerUseSectionOrder({ getSectionOrder: () => 3000 }), 3000)
+  // Older releases have no such entry: the lookup returns undefined and we keep 48.
+  assert.equal(computerUseSectionOrder({ getSectionOrder: () => undefined }), 48)
+  assert.equal(computerUseSectionOrder({}), 48)
+  assert.equal(computerUseSectionOrder(undefined), 48)
+})
+
+test('C6 a missing prompt asset fails loudly and is reported by promptAssetStatus', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cu-assets-'))
+  try {
+    assert.throws(() => computerUsePrompt({ dir }), /prompt assets unavailable/)
+    const status = promptAssetStatus(dir)
+    assert.equal(status.ok, false)
+    for (const name of REQUIRED_PROMPT_FILES) assert.ok(status.missing.includes(name), 'missing ' + name)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('C3 sidecar never writes the JSON-RPC envelope', () => {
+  assert.equal(/jsonrpc\s*:/.test(source('sidecar.js')), false, 'no jsonrpc key may be written')
+})
+
+test('C4 helper environment is a whitelist, not the parent environment', () => {
+  assert.equal(/\.\.\.process\.env/.test(source('sidecar.js')), false, 'no process.env spread')
+  const sentinel = 'SECRET_TOKEN_SENTINEL_VALUE'
+  process.env.SECRET_TOKEN_SENTINEL = sentinel
+  process.env.DSH_HOME = process.env.DSH_HOME || 'C:\\dsh-home'
+  try {
+    const { env, injected, excluded } = sanitizedEnvironment({ EXTRA_FLAG: '1' }, [])
+    assert.equal(env.SECRET_TOKEN_SENTINEL, undefined, 'sentinel must not reach the helper')
+    assert.ok(excluded.includes('SECRET_TOKEN_SENTINEL'))
+    assert.equal(env.EXTRA_FLAG, '1')
+    assert.ok(injected.includes('PATH') || injected.includes('Path'), 'PATH should be forwarded')
+    assert.ok(injected.includes('DSH_HOME'))
+    assert.ok(BASE_ENV_ALLOWLIST.includes('SystemRoot'))
+  } finally {
+    delete process.env.SECRET_TOKEN_SENTINEL
+  }
+})
+
+test('C5 a helper that never becomes ready rejects on a startup budget', async () => {
+  const fake = {
+    pid: undefined,
+    exitCode: null,
+    once() {},
+    off() {},
+    kill() { this.killed = true },
+    killed: false,
+  }
+  await assert.rejects(() => waitSpawn(fake, 30), /startup timeout/)
+  assert.equal(fake.killed, true, 'a helper that never becomes ready must be killed')
+})
+
+test('TC-01 desktop surface is exactly the official thirteen plus the configured extras', async () => {
+  const harness = makeHarness()
+  await applyTools(harness.ctx, ToolConfig({}))
+  const names = [...harness.registered.keys()]
+  for (const spec of DESKTOP_13) assert.ok(names.includes(spec.name), 'missing ' + spec.name)
+  assert.ok(names.includes('batch_actions'), 'configured harness extra missing')
+  assert.equal(names.includes('diagnostic_state'), false, 'diagnostic tools are opt-in')
+  assert.equal(names.includes('end_turn'), false, 'end_turn is not model-facing')
+  assert.equal(names.includes('click_element'), false)
+})
+
+test('APS-01 a rejected refusal goes nowhere and is never self-approved', async () => {
+  const harness = makeHarness({
+    approval: { request: async () => 'rejected' },
+    onCall: () => ({ ok: false, error: 'AppApprovalRequired', approvalRequest: { app: 'evil.exe', displayName: 'Evil', riskLevel: 'high', allowPersistentApproval: true } }),
+  })
+  await applyTools(harness.ctx, ToolConfig({}))
+  const tool = harness.registered.get('click')
+  await assert.rejects(
+    () => tool.execute({ window: { app: 'evil.exe', id: 1 }, x: 1, y: 1 }, { agent: { id: 's' }, arguments: { app: 'evil.exe' } }),
+    /not approved to use Evil/,
+  )
+  const retries = harness.calls.filter(c => c.meta && c.meta['x-oai-cua-approved-app'])
+  assert.equal(retries.length, 0, 'a rejected approval must not be retried with the approved header')
+})
+
+test('APS-01 an approved refusal retries once with the official header and elicitation meta', async () => {
+  let seen
+  const harness = makeHarness({
+    approval: { request: async request => { seen = request; return 'allowed-once' } },
+    onCall: (name, args, meta, count) => (count === 1
+      ? { ok: false, error: 'AppApprovalRequired', approvalRequest: { app: 'notepad.exe', displayName: 'Notepad', riskLevel: 'low', allowPersistentApproval: true } }
+      : { ok: true, value: { done: true } }),
+  })
+  await applyTools(harness.ctx, ToolConfig({}))
+  const tool = harness.registered.get('launch_app')
+  const result = await tool.execute({ app: 'notepad.exe' }, { agent: { id: 's' }, arguments: { app: 'notepad.exe' } })
+  assert.equal(result.value.done, true)
+  assert.equal(seen.connector_id, 'computer-use')
+  assert.equal(seen.connector_name, 'Computer Use')
+  assert.deepEqual(seen.persist, ['session', 'always'])
+  assert.equal(seen.riskLevel, 'low')
+  assert.deepEqual(seen.tool_params, { app: 'notepad.exe' })
+  assert.equal(seen.codex_approval_kind, 'mcp_tool_call')
+  assert.match(seen.reason, /Allow Computer Use to use Notepad/)
+  const retries = harness.calls.filter(c => c.meta && c.meta['x-oai-cua-approved-app'] === 'notepad.exe')
+  assert.equal(retries.length, 1)
+})
+
+test('PSG-5 requiredFor documentation gate blocks CDP until the reference is read', async () => {
+  const harness = makeHarness({ browserTools: [
+    { name: 'tab_cdp_call', description: 'cdp', parameters: { type: 'object', properties: {} } },
+  ] })
+  await applyTools(harness.ctx, ToolConfig({ surfaces: ['browser'] }))
+  const tool = harness.registered.get('tab_cdp_call')
+  assert.ok(tool, 'browser catalog must register when surfaces=[browser]')
+  assert.deepEqual(REQUIRED_DOCS.tab_cdp_call, ['computer-use-browser/references/confirmations.md'])
+  await assert.rejects(
+    () => tool.execute({ method: 'Runtime.evaluate' }, { agent: { id: 's' }, arguments: {} }),
+    /requiredFor gate/,
+  )
+  harness.emitResult({ name: 'read', arguments: { file_path: 'C:/skills/computer-use-browser/references/confirmations.md' } }, { isError: false })
+  const result = await tool.execute({ method: 'Runtime.evaluate' }, { agent: { id: 's' }, arguments: {} })
+  assert.equal(result.value.called, 'tab_cdp_call')
+})
+
+test('PSG-9 the whole plugin plane ships no TTL contract', () => {
+  // The official window2 contract has no time-based observation expiry, so no
+  // model-visible surface, manifest or config key may teach one. \bttl catches
+  // `TTL`, `ttlMs` and `TTL:` without matching words such as "settled".
+  const surfaces = [
+    'src/tool.js',
+    'src/prompt.js',
+    'src/index.js',
+    'src/sidecar.js',
+    'cordis.patch.yml',
+    'dsh-plugin.json',
+    'docs/plugin-readme.zh.md',
+    'skills/computer-use/SKILL.md',
+    'skills/computer-use-browser/SKILL.md',
+  ]
+  for (const rel of surfaces) {
+    const text = fs.readFileSync(path.join(pluginRoot, rel), 'utf8')
+    assert.equal(/\bttl/i.test(text), false, rel + ' must not mention a TTL')
+  }
+  const host = HostConfig({})
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(host, 'ttlMs'),
+    false,
+    'the dead ttlMs knob must be gone from the host config',
+  )
+})
+
+test('PSG-4 both official browser policy documents are declared, shipped and byte-identical', () => {
+  const dir = path.join(pluginRoot, 'skills', 'computer-use-browser', 'references')
+  const skill = fs.readFileSync(path.join(pluginRoot, 'skills', 'computer-use-browser', 'SKILL.md'), 'utf8')
+  const codexHomeDir = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
+  const official = path.join(codexHomeDir, 'plugins', 'cache', 'openai-bundled', 'browser', '26.903.61454', 'docs')
+  // A reference that is not declared in SKILL.md is not wired: the model is never
+  // pointed at it. A missing official package is a RED, not a silent skip.
+  assert.ok(fs.existsSync(official), 'official browser package not found at ' + official)
+  for (const name of BROWSER_REFERENCE_FILES) {
+    const ours = path.join(dir, name)
+    assert.ok(fs.existsSync(ours), 'missing ' + ours)
+    assert.ok(fs.statSync(ours).size > 1000, name + ' looks truncated')
+    assert.match(skill, new RegExp('references/' + name.replace('.', '\\.')), 'SKILL.md must declare references/' + name)
+    assert.equal(
+      fs.readFileSync(ours, 'utf8'),
+      fs.readFileSync(path.join(official, name), 'utf8'),
+      name + ' must be the official document verbatim',
+    )
+  }
+})
+
+test('PSG-4 the health documentation channel lists the browser references', () => {
+  const docs = documentationSummary()
+  assert.deepEqual(docs.browser.references, BROWSER_REFERENCE_FILES)
+  assert.equal(docs.browser.status.ok, true, 'browser references must be present')
+  assert.deepEqual(docs.browser.status.missing, [])
+  assert.ok(docs.browser.requiredFor['computer-use-browser/references/confirmations.md'].includes('tab_cdp_call'))
+  assert.deepEqual(browserReferenceStatus().present.sort(), [...BROWSER_REFERENCE_FILES].sort())
+})
+
+test('PSG-4 the browser requiredFor gate is path-qualified, not basename-keyed', async () => {
+  // The desktop and browser skills both ship `references/confirmations.md` with
+  // DIFFERENT policy text, so a basename match let the Windows policy open the
+  // browser CDP gate. Both directions are asserted here.
+  assert.equal(
+    documentWasRead([normalizeDocPath('C:/x/skills/computer-use/references/confirmations.md')], REQUIRED_DOCS.tab_cdp_call[0]),
+    false,
+    'the Windows confirmations policy must not satisfy the browser gate',
+  )
+  assert.equal(
+    documentWasRead([normalizeDocPath('C:\\u\\.dsh\\skills\\computer-use-browser\\references\\confirmations.md')], REQUIRED_DOCS.tab_cdp_call[0]),
+    true,
+  )
+  const harness = makeHarness({ browserTools: [
+    { name: 'tab_cdp_call', description: 'cdp', parameters: { type: 'object', properties: {} } },
+  ] })
+  await applyTools(harness.ctx, ToolConfig({ surfaces: ['browser'] }))
+  const tool = harness.registered.get('tab_cdp_call')
+  harness.emitResult({ name: 'read', arguments: { file_path: 'C:\\x\\skills\\computer-use\\references\\confirmations.md' } }, { isError: false })
+  await assert.rejects(
+    () => tool.execute({ method: 'Runtime.evaluate' }, { agent: { id: 's' }, arguments: {} }),
+    /requiredFor gate/,
+  )
+  harness.emitResult({ name: 'read', arguments: { file_path: 'C:\\x\\skills\\computer-use-browser\\references\\confirmations.md' } }, { isError: false })
+  const ok = await tool.execute({ method: 'Runtime.evaluate' }, { agent: { id: 's' }, arguments: {} })
+  assert.equal(ok.value.called, 'tab_cdp_call')
+})
+
+test('PSG-6 the SKILL tree grammar matches helper-rs/src/uia.rs', () => {
+  const uia = fs.readFileSync(path.join(repoRoot, 'helper-rs', 'src', 'uia.rs'), 'utf8')
+  const skill = fs.readFileSync(path.join(pluginRoot, 'skills', 'computer-use', 'SKILL.md'), 'utf8')
+
+  // 1. the implementation's own template, extracted from the format! call.
+  const template = uia.match(/"[^"]*\{indent\}[^"]*"/)
+  assert.ok(template, 'could not find the uia.rs element-line template')
+  assert.match(
+    template[0],
+    /\{indent\}\{\} \{\}\{state_block\}\{name\}\{suffix\}/,
+    'formatter template changed: ' + template[0],
+  )
+  assert.match(uia, /let state_block = if pre\.is_empty\(\)/, 'state_block construction not found')
+
+  // 2. the skill's grammar line must place the state block BEFORE the name.
+  const grammarLine = skill.split('\n').find(line => line.includes('<TABs>'))
+  assert.ok(grammarLine, 'SKILL.md must state the element-line grammar')
+  const iRole = grammarLine.indexOf('<role>')
+  const iState = grammarLine.indexOf('(<state>)')
+  const iName = grammarLine.indexOf('[<name>]')
+  assert.ok(iRole !== -1, 'grammar must name the role: ' + grammarLine)
+  assert.ok(iState > iRole, 'the state block must sit after the role: ' + grammarLine)
+  assert.ok(iName > iState, 'the name must come after the state block: ' + grammarLine)
+  assert.equal(/\{x, y, width, height\}/.test(skill), false, 'bounds are not printed by the helper')
+  assert.equal(/\[index\] role/.test(skill), false, 'the index is bare, not bracketed')
+
+  // 3. the official suffix order is fixed by the code; the skill must match it.
+  let cursor = -1
+  for (const token of ['Description: ...', 'Value: ...', 'Secondary Actions: ...', 'ID: ...']) {
+    const at = skill.indexOf(token)
+    assert.ok(at > cursor, 'SKILL.md must list suffix ' + token + ' in the helper order')
+    cursor = at
+  }
+
+  // 4. role casing and whitespace collapsing must be described the way the code does.
+  const richLowercases = /raw\.trim\(\)\.to_ascii_lowercase\(\)/.test(uia)
+  assert.equal(
+    /default profile[^.]*lower-cases/i.test(skill),
+    richLowercases,
+    'SKILL.md role-casing claim must match uia.rs',
+  )
+  const officialCollapses = /collapse_whitespace\(&name\)/.test(uia)
+  assert.equal(
+    /official\s*`?\s*profile[^.]*collapses runs of whitespace/i.test(skill),
+    officialCollapses,
+    'SKILL.md whitespace claim must match uia.rs',
+  )
+  assert.ok(/SplitButton/.test(skill), 'SKILL.md must show the case-preserved role example')
+})
+
+test('PSG-3 the plugin plane no longer teaches a window2 diff contract', () => {
+  for (const rel of ['skills/computer-use/SKILL.md', 'skills/computer-use-browser/SKILL.md', 'src/tool.js', 'src/prompt.js']) {
+    const text = fs.readFileSync(path.join(pluginRoot, rel), 'utf8')
+    assert.equal(
+      /disableDiffing|disable_diffing|no accessibility-tree change/i.test(text),
+      false,
+      rel + ' must not teach the invented window2 diff contract',
+    )
+  }
+  const readme = fs.readFileSync(path.join(pluginRoot, 'docs', 'plugin-readme.zh.md'), 'utf8')
+  assert.equal(/无障碍树增量|默认返回相对上次/.test(readme), false, 'README must not claim incremental trees')
+})
+
+test('PSG-7 batch_actions is documented as conditional, never unconditionally', () => {
+  const skill = fs.readFileSync(path.join(pluginRoot, 'skills', 'computer-use', 'SKILL.md'), 'utf8')
+  const start = skill.indexOf('`batch_actions`')
+  assert.ok(start !== -1, 'SKILL.md must document batch_actions')
+  const paragraph = skill.slice(start).split('\n\n')[0]
+  assert.match(paragraph, /element_index/, 'the batch rule must be limited to actions that do not consume element_index')
+  assert.match(paragraph, /invalidates every index|do \*\*not\*\* depend/i, 'the batch rule must say why element indexes make batching unsafe')
+})
+
+test('APS-10 the official approvalRequest parser and refusal display name', async () => {
+  // Verbatim from helper_transport.js: an approval exists only when app is a
+  // non-empty trimmed string; displayName falls back to the trimmed app; riskLevel
+  // is the two-valued low|high mapping; allowPersistentApproval defaults true.
+  assert.equal(normalizeApprovalRequest(undefined), null)
+  assert.equal(normalizeApprovalRequest({}), null)
+  assert.equal(normalizeApprovalRequest({ app: '   ' }), null)
+  assert.deepEqual(normalizeApprovalRequest({ app: '  mspaint.exe  ', displayName: '  Paint ' }), {
+    app: 'mspaint.exe',
+    displayName: 'Paint',
+    allowPersistentApproval: true,
+  })
+  assert.deepEqual(normalizeApprovalRequest({ app: 'notepad.exe', riskLevel: 'medium', allowPersistentApproval: false }), {
+    app: 'notepad.exe',
+    displayName: 'notepad.exe',
+    allowPersistentApproval: false,
+  })
+  assert.equal(normalizeApprovalRequest({ app: 'x.exe', riskLevel: 'high' }).riskLevel, 'high')
+
+  let seen
+  const exePath = 'C:\\Program Files\\Paint\\mspaint.exe'
+  const harness = makeHarness({
+    approval: { request: async request => { seen = request; return 'rejected' } },
+    onCall: () => ({
+      ok: false,
+      error: 'AppApprovalRequired',
+      approvalRequest: { app: exePath, displayName: '  Paint  ', riskLevel: 'medium', allowPersistentApproval: true },
+    }),
+  })
+  await applyTools(harness.ctx, ToolConfig({}))
+  const tool = harness.registered.get('click')
+  await assert.rejects(
+    () => tool.execute({ window: { app: exePath, id: 1 }, x: 1, y: 1 }, { agent: { id: 's' }, arguments: { app: exePath } }),
+    error => {
+      assert.match(String(error.message), /not approved to use Paint$/)
+      assert.equal(String(error.message).includes('Program Files'), false, 'the refusal must not leak the exe path')
+      return true
+    },
+  )
+  assert.equal(seen.reason, 'Allow Computer Use to use Paint?')
+  assert.equal(seen.riskLevel, 'low', 'an unknown riskLevel normalises to the official low')
+  assert.deepEqual(seen.tool_params, { app: exePath })
+  assert.deepEqual(seen.tool_params_display, [{ name: 'app', display_name: 'App', value: 'Paint' }])
+})
+
+test('APS-09 stop_audio_recording derives bytes and the official data_url from disk', async () => {
+  // Official Audio.d.ts = { filepath, bytes, data_url }; the official Windows
+  // client re-reads the WAV the helper wrote. DSH's helper returns filepath +
+  // data_url, so the plugin must add the missing byte count here.
+  assert.throws(
+    () => deriveAudioResult({ ok: true, value: null }, 'stop_audio_recording'),
+    /did not return computer audio/,
+  )
+  assert.throws(
+    () => deriveAudioResult({ ok: true, value: { filepath: '' } }, 'stop_audio_recording'),
+    /did not return a computer audio filepath/,
+  )
+  assert.deepEqual(
+    deriveAudioResult({ ok: true, value: { untouched: true } }, 'start_audio_recording').value,
+    { untouched: true },
+    'start_audio_recording is passed through, exactly like the official client',
+  )
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cu-audio-'))
+  const file = path.join(dir, 'clip.wav')
+  const wav = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(44), Buffer.from([1, 2, 3, 4])])
+  fs.writeFileSync(file, wav)
+  try {
+    const harness = makeHarness({
+      desktopTools: DESKTOP_13.concat([
+        { name: 'stop_audio_recording', description: 'stop', parameters: { type: 'object', properties: {} } },
+      ]),
+      // A stale data_url from the helper must be replaced by the bytes on disk.
+      onCall: () => ({ ok: true, value: { filepath: file, data_url: 'data:audio/wav;base64,STALE' } }),
+    })
+    await applyTools(harness.ctx, ToolConfig({}))
+    const tool = harness.registered.get('stop_audio_recording')
+    assert.ok(tool, 'stop_audio_recording must be registered')
+    const result = await tool.execute({}, { agent: { id: 's' }, arguments: {} })
+    assert.equal(result.value.filepath, file)
+    assert.equal(result.value.bytes, wav.length, 'bytes must equal the WAV file size')
+    assert.equal(result.value.bytes, fs.statSync(file).size)
+    assert.equal(result.value.data_url, 'data:audio/wav;base64,' + wav.toString('base64'))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('APS-09 a missing WAV fails loudly with the official string', async () => {
+  const harness = makeHarness({
+    desktopTools: DESKTOP_13.concat([
+      { name: 'stop_audio_recording', description: 'stop', parameters: { type: 'object', properties: {} } },
+    ]),
+    onCall: () => ({ ok: true, value: { filepath: path.join(os.tmpdir(), 'cu-does-not-exist.wav') } }),
+  })
+  await applyTools(harness.ctx, ToolConfig({}))
+  const tool = harness.registered.get('stop_audio_recording')
+  await assert.rejects(
+    () => tool.execute({}, { agent: { id: 's' }, arguments: {} }),
+    error => {
+      assert.match(String(error.message), /did not return a computer audio filepath/)
+      assert.ok(error.cause, 'the read failure must not be swallowed (APS-09)')
+      return true
+    },
+  )
+})
+
+
+test('PKG-01..05 the plugin manifest declares identity, skills, capabilities and turn hooks', () => {
+  const manifestPath = path.join(pluginRoot, 'dsh-plugin.json')
+  assert.ok(fs.existsSync(manifestPath), 'dsh-plugin.json missing')
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  for (const key of ['name', 'version', 'description', 'author', 'license', 'capabilities', 'skills', 'interface', 'hooks', 'tools']) {
+    assert.ok(manifest[key] !== undefined, 'manifest missing ' + key)
+  }
+  assert.equal(manifest.skills, './skills/')
+  assert.ok(Array.isArray(manifest.capabilities) && manifest.capabilities.includes('Interactive'))
+  for (const hook of ['Stop', 'Interrupt', 'SubagentStop']) {
+    assert.equal(manifest.hooks[hook], TURN_LIFECYCLE_HOOKS[hook])
+  }
+  assert.ok(manifest.tools.enabled.includes('batch_actions'))
+  assert.ok(manifest.tools.startup_timeout_ms > 0)
+  assert.ok(Array.isArray(manifest.tools.env_allowlist) && manifest.tools.env_allowlist.length > 0)
+  assert.deepEqual(manifest.tools.env_allowlist, BASE_ENV_ALLOWLIST, 'manifest env allowlist must match the shipped one')
+  for (const entry of fs.readdirSync(path.join(pluginRoot, 'skills'))) {
+    const skill = path.join(pluginRoot, 'skills', entry, 'SKILL.md')
+    assert.ok(fs.existsSync(skill), 'skills/' + entry + ' has no SKILL.md')
+    const text = fs.readFileSync(skill, 'utf8')
+    assert.match(text, /^---/)
+    assert.match(text, /name:/)
+    assert.match(text, /description:/)
+  }
+  assert.deepEqual(manifest.capabilities, SERVICE_CAPABILITIES)
+})
+
+test('host and tool configs validate and default to the official surface', () => {
+  const host = HostConfig({})
+  assert.equal(host.surface, 'computer')
+  assert.ok(host.startupTimeoutMs > 0)
+  assert.deepEqual(host.envAllowlist, [])
+  const tool = ToolConfig({})
+  assert.deepEqual(tool.surfaces, ['computer'])
+  assert.equal(tool.approvalDefault, 'prompt')
+  assert.deepEqual(tool.enabledTools, ['batch_actions'])
+  assert.deepEqual(tool.approvalTools, {})
+})
+
+test('D-E maxImageEdge defaults to the official no-cap behaviour and stays labelled', () => {
+  const host = HostConfig({})
+  // Decision D-E: parity first. 0 ships the screenshot the official helper ships; a
+  // positive value is an opt-in DSH downscale for token saving and must stay visible in
+  // the health payload rather than being an undocumented silent cap.
+  assert.equal(host.maxImageEdge, 0, 'the default is the official behaviour (no cap)')
+  const limits = captureLimits(host.maxImageEdge, repoRoot)
+  assert.equal(limits.maxImageEdge.value, 0)
+  assert.equal(limits.maxImageEdge.official, null)
+  assert.equal(limits.maxImageEdge.kind, 'dsh-extension')
+  assert.match(limits.maxImageEdge.note, /DSH-only/)
+  const capped = captureLimits(1280, repoRoot)
+  assert.equal(capped.maxImageEdge.value, 1280, 'the knob still works when set')
+})
+
+test('MCP-02/07/12 health exposes the server instruction, catalog, docs and env audit', async () => {
+  const harness = makeHarness()
+  await applyTools(harness.ctx, ToolConfig({}))
+  const health = await harness.registered.get('computer_use_health').execute({}, { agent: { id: 's' } })
+  assert.equal(health.codexRequired, false)
+  assert.equal(health.backend, 'fake')
+  assert.ok(health.tools.exposed.includes('get_window_state'))
+  assert.deepEqual(health.tools.enabled, ['batch_actions'])
+  assert.equal(health.approval.default, 'prompt')
+  assert.ok(health.documentation.references.includes('guidance.md'))
+  assert.equal(health.promptAssets.ok, true)
+  assert.deepEqual(health.documentationGate.requiredFor.tab_cdp_call, ['computer-use-browser/references/confirmations.md'])
+})
+
+
+test('TURN-1 turn/end sends end_turn with the real turn id, then releases the overlay', async () => {
+  const { Context } = await import('@deepseek-ai/cordis')
+  const ctx = new Context()
+  await ctx.plugin(ComputerUseService, {})
+  const service = ctx.dshComputerUse
+  const ended = []
+  service.endTurn = params => { ended.push(params); return Promise.resolve({ ok: true }) }
+  let releases = 0
+  service.releaseOverlay = () => { releases += 1; return Promise.resolve({ ok: true }) }
+  service.lastConversationId = 'session-abc'
+  ctx.emit('session/event', { id: 'session-abc' }, { type: 'turn/end', data: { turn: 7, reason: { kind: 'completed' } } })
+  await Promise.resolve()
+  assert.deepEqual(ended, [{ session_id: 'session-abc', turn_id: '7' }], 'official turn_ended payload')
+  assert.equal(releases, 1)
+})
+
+test('MCP-07 enabledTools controls which harness extensions enter the catalog', async () => {
+  const harness = makeHarness()
+  await applyTools(harness.ctx, ToolConfig({ enabledTools: ['diagnostic_state'] }))
+  const names = [...harness.registered.keys()]
+  assert.ok(names.includes('diagnostic_state'))
+  assert.equal(names.includes('batch_actions'), false, 'batch_actions is not enabled by this config')
+})
+

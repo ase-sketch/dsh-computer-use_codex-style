@@ -1,0 +1,60 @@
+[
+  {
+    "label": "normal",
+    "state": "state=normal hwnd=9243264 iconic=False visible=True rect=360,270 960x630",
+    "observe": "ok",
+    "activate": "(not needed)",
+    "refresh": "ok",
+    "retry": "ok",
+    "expected": {
+      "observe": "ok"
+    }
+  },
+  {
+    "label": "minimized",
+    "state": "state=minimize hwnd=9243264 iconic=True visible=True rect=-48000,-48000 356x59",
+    "observe": "window is minimized; call activate_window, refresh with get_window, then retry get_window_state",
+    "activate": "ok",
+    "refresh": "ok",
+    "retry": "ok",
+    "expected": {
+      "observe": "window is minimized"
+    }
+  },
+  {
+    "label": "hidden",
+    "state": "state=hide hwnd=9243264 iconic=False visible=False rect=360,270 960x630",
+    "observe": "window is not a usable app window",
+    "activate": "ok",
+    "refresh": "ok",
+    "retry": "ok",
+    "expected": {
+      "observe": [
+        "window is not a usable app window",
+        "window has invalid bounds or is not visible"
+      ]
+    }
+  },
+  {
+    "label": "mostly off-screen",
+    "state": "state=offscreen hwnd=9243264 iconic=False visible=True rect=2441,1301 960x630",
+    "observe": "ok",
+    "activate": "(not needed)",
+    "refresh": "ok",
+    "retry": "ok",
+    "expected": {
+      "observe": "ok"
+    }
+  },
+  {
+    "label": "occluded (target behind another window)",
+    "state": "(unchanged)",
+    "observe": "ok",
+    "activate": "(not needed)",
+    "refresh": "ok",
+    "retry": "ok",
+    "expected": {
+      "observe": "ok"
+    }
+  }
+]

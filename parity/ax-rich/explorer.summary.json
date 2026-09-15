@@ -1,0 +1,30 @@
+{
+  "kind": "explorer",
+  "when": "2026-09-14T15:06:10.671Z",
+  "official": {
+    "ok": false,
+    "error": "empty accessibility: null window=\"Temp - 文件资源管理器\"",
+    "window": {
+      "app": "process:C:\\Windows\\explorer.exe",
+      "id": 29822930,
+      "title": "Temp - 文件资源管理器"
+    },
+    "stats": {
+      "lines": 0,
+      "bytes": 0,
+      "states": {},
+      "secondary": 0,
+      "descriptions": 0,
+      "values": 0,
+      "ids": 0,
+      "truncated": 0,
+      "misordered": 0,
+      "roles": {}
+    }
+  },
+  "ours": {
+    "ok": false,
+    "error": "target explorer is not open",
+    "stats": null
+  }
+}

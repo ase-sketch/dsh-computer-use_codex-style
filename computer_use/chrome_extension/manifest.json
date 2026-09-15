@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Computer Use Tab Bridge",
+  "version": "0.1.0",
+  "description": "Claim existing Chrome/Edge tabs (login state) for Computer Use, Codex-style.",
+  "permissions": ["tabs", "debugger", "scripting", "downloads", "history", "nativeMessaging"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*", "<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Computer Use Tab Bridge" }
+}

@@ -1,0 +1,8 @@
+using System;
+using System.Runtime.InteropServices;
+public class T {
+  [DllImport("kernel32.dll")] public static extern int WTSGetActiveConsoleSessionId();
+  [DllImport("wtsapi32.dll", SetLastError=true)] public static extern bool WTSQuerySessionInformationW(IntPtr server, int sessionId, int infoClass, out IntPtr buffer, out int bytes);
+  [DllImport("wtsapi32.dll")] public static extern void WTSFreeMemory(IntPtr p);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+}

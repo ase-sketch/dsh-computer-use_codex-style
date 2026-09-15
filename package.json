@@ -1,0 +1,64 @@
+{
+  "name": "dsh-computer-use",
+  "version": "0.1.0",
+  "description": "Windows Computer Use for DeepSeek Harness: Codex-parity window2 + browser, no Codex required",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./tool": "./src/tool.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "dsh-plugin.json",
+    "skills",
+    "scripts",
+    "helper-rs/bin",
+    "helper-rs/assets",
+    "computer_use",
+    "parity/official-constants.json",
+    "docs/plugin-readme.md",
+    "docs/plugin-readme.zh.md",
+    "README.zh-CN.md"
+  ],
+  "author": "DeepSeek Harness",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wushi2333/dsh-computer-use_codex-style.git"
+  },
+  "homepage": "https://github.com/wushi2333/dsh-computer-use_codex-style#readme",
+  "bugs": {
+    "url": "https://github.com/wushi2333/dsh-computer-use_codex-style/issues"
+  },
+  "keywords": [
+    "computer-use",
+    "desktop-control",
+    "windows",
+    "automation",
+    "window2",
+    "ui-automation"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "manifest": "./dsh-plugin.json",
+    "skills": "./skills/",
+    "codexBaseline": "26.903.61454"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-system-prompt": "*",
+    "@deepseek-ai/dsh-user-approval": "*",
+    "@deepseek-ai/dsh-attachment": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-user-approval": { "optional": true },
+    "@deepseek-ai/dsh-attachment": { "optional": true }
+  }
+}

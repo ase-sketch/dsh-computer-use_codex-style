@@ -1,0 +1,15 @@
+{
+  "keys": [
+    "focused_element",
+    "tree"
+  ],
+  "resultKeys": [
+    "accessibility",
+    "cacheDiagnostics",
+    "screenshots",
+    "window"
+  ],
+  "focused_element": "2 编辑 Parity probe label ID: ParityBox",
+  "document_text": "",
+  "tree": "Window: \"Parity Target\", App: ParityTarget.exe.\n\t0 窗口 Parity Target Secondary Actions: Raise\n\t\t1 文本 Parity probe label ID: 12979046\n\t\t2 编辑 Parity probe label ID: ParityBox\n\t\t3 按钮 Parity Button ID: ParityButton\n\t\t4 标题栏\n\t\t\t5 菜单栏 系统 ID: MenuBar\n\t\t\t\t6 菜单项 系统\n\t\t\t7 按钮 最小化\n\t\t\t8 按钮 最大化\n\t\t\t9 按钮 关闭\n\nThe focused UI element is 2 编辑 Parity probe label ID: ParityBox."
+}

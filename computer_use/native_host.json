@@ -1,0 +1,9 @@
+{
+  "name": "com.computeruse.tabbridge",
+  "description": "Computer Use tab bridge native host",
+  "path": "PYTHON_HOST",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://EXTENSION_ID/"
+  ]
+}

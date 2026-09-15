@@ -1,0 +1,15 @@
+set_value={"id":4,"ok":false,"error":"read UIA value read-only state: 所需属性不在 CacheRequest 中 (0x80070057)"}
+diff observe:
+Window: "Parity Target", App: ParityTarget.exe.
+	0 窗口 Parity Target Secondary Actions: Raise
+		1 文本 Parity probe label ID: 14681076
+		2 编辑 Parity probe label ID: ParityBox
+		3 按钮 Parity Button ID: ParityButton
+		4 标题栏
+			5 菜单栏 系统 ID: MenuBar
+				6 菜单项 系统
+			7 按钮 最小化
+			8 按钮 最大化
+			9 按钮 关闭
+
+The focused UI element is 2 编辑 Parity probe label ID: ParityBox.

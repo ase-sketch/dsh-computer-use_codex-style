@@ -1,0 +1,67 @@
+/// Official `create text shimmer` / `create shimmer mask gradient` /
+/// `create shimmer gradient mask` / `start shimmer animation`.
+///
+/// A masked accent band sweeps across the status text. The band is an accent
+/// brush masked by a gradient and clipped to the pill, and the sweep is an
+/// offset keyframe on the band visual — the same displacement as the official
+/// `Vector2(StartX + TravelX * shimmer.Progress, 0.0)`, without depending on
+/// expression-animation support.
+fn attach_shimmer(
+    compositor: &Compositor,
+    pill_children: &windows::UI::Composition::VisualCollection,
+    layout: &PillLayout,
+    accent: (f32, f32, f32, f32),
+) {
+    let band = (layout.status_width * 1.1).max(48.0);
+    let Ok(mask_brush) = compositor.CreateMaskBrush() else { return };
+    let Ok(gradient) = compositor.CreateLinearGradientBrush() else { return };
+    let _ = gradient.SetMappingMode(CompositionMappingMode::Absolute);
+    let _ = gradient.SetStartPoint(Vector2::new(0.0, 0.0));
+    let _ = gradient.SetEndPoint(Vector2::new(band, 0.0));
+    if let Ok(stops) = gradient.ColorStops() {
+        if let Ok(clear) = compositor.CreateColorGradientStopWithOffsetAndColor(0.0, ui_color(1.0, 1.0, 1.0, 0.0)) {
+            let _ = stops.Append(&clear);
+        }
+        if let Ok(solid) = compositor.CreateColorGradientStopWithOffsetAndColor(0.35, ui_color(1.0, 1.0, 1.0, 1.0)) {
+            let _ = stops.Append(&solid);
+        }
+        if let Ok(fade) = compositor.CreateColorGradientStopWithOffsetAndColor(1.0, ui_color(1.0, 1.0, 1.0, 0.0)) {
+            let _ = stops.Append(&fade);
+        }
+    }
+    let Ok(source_brush) =
+        compositor.CreateColorBrushWithColor(ui_color(accent.0, accent.1, accent.2, 0.55))
+    else {
+        return;
+    };
+    let _ = mask_brush.SetSource(&source_brush);
+    let _ = mask_brush.SetMask(&gradient);
+
+    let Ok(shape) = compositor.CreateSpriteShape() else { return };
+    let _ = shape.SetFillBrush(&mask_brush);
+    let Ok(visual) = compositor.CreateShapeVisual() else { return };
+    let _ = visual.SetSize(Vector2::new(layout.status_width + 8.0, layout.height));
+    if let Ok(shapes) = visual.Shapes() {
+        let _ = shapes.Append(&shape);
+    }
+    // Clip the sweep to the status text run so it never bleeds out of the pill.
+    if let Ok(geometry) = compositor.CreateRoundedRectangleGeometry() {
+        let _ = geometry.SetSize(Vector2::new(layout.status_width + 8.0, layout.height));
+        let _ = geometry.SetCornerRadius(Vector2::new(layout.radius, layout.radius));
+        if let Ok(clip) = compositor.CreateGeometricClipWithGeometry(&geometry) {
+            let _ = visual.SetClip(&clip);
+        }
+    }
+    let _ = visual.SetOffset(Vector3::new(layout.status_x - layout.x, 0.0, 0.0));
+    // Sweep the band across the text forever.
+    if let Ok(offset) = compositor.CreateVector3KeyFrameAnimation() {
+        let travel = layout.status_width + 8.0 + band;
+        let _ = offset.SetDuration(ticks_100ns(2200));
+        let _ = offset.SetIterationBehavior(AnimationIterationBehavior::Forever);
+        let _ = offset.InsertKeyFrame(0.0, Vector3::new(-band, 0.0, 0.0));
+        let _ = offset.InsertKeyFrame(1.0, Vector3::new(travel, 0.0, 0.0));
+        let as_visual: Visual = visual.cast().unwrap_or_else(|_| visual.clone().into());
+        let _ = as_visual.StartAnimation(&HSTRING::from("Offset"), &offset);
+    }
+    let _ = pill_children.InsertAtTop(&visual);
+}

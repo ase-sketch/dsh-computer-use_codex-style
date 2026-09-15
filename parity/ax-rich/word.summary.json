@@ -1,0 +1,110 @@
+{
+  "kind": "word",
+  "when": "2026-09-14T16:32:00.457Z",
+  "official": {
+    "ok": true,
+    "window": {
+      "app": "process:C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
+      "id": 2752908,
+      "title": "03_关键时间节点与行动清单.docx  -  最后由用户保存  -  兼容性模式 - Word"
+    },
+    "stats": {
+      "lines": 405,
+      "bytes": 13908,
+      "states": {
+        "disabled": 15,
+        "selectable": 11
+      },
+      "secondary": 5,
+      "descriptions": 2,
+      "values": 0,
+      "ids": 94,
+      "truncated": 0,
+      "misordered": 0,
+      "roles": {
+        "窗口": 1,
+        "窗格": 19,
+        "工具栏": 3,
+        "切换关闭": 1,
+        "按钮": 73,
+        "SplitButton": 11,
+        "菜单项": 25,
+        "标题栏": 2,
+        "选项卡项目": 11,
+        "组合框": 3,
+        "组": 11,
+        "编辑框": 2,
+        "文档": 1,
+        "页面": 7,
+        "编辑": 7,
+        "目录": 1,
+        "字段": 1,
+        "形状": 7,
+        "表格": 4,
+        "项": 163,
+        "链接": 1,
+        "列表": 11,
+        "列表项目": 31,
+        "滚动条": 2,
+        "状态栏": 1,
+        "文本": 1,
+        "滑块": 1,
+        "Thumb": 2,
+        "菜单栏": 1
+      }
+    }
+  },
+  "ours": {
+    "ok": true,
+    "window": {
+      "app": "process:C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
+      "id": 2752908,
+      "title": "03_关键时间节点与行动清单.docx  -  最后由用户保存  -  兼容性模式 - Word"
+    },
+    "stats": {
+      "lines": 405,
+      "bytes": 23526,
+      "states": {
+        "disabled": 15,
+        "selectable": 11
+      },
+      "secondary": 5,
+      "descriptions": 2,
+      "values": 0,
+      "ids": 94,
+      "truncated": 0,
+      "misordered": 0,
+      "roles": {
+        "窗口": 1,
+        "窗格": 19,
+        "工具栏": 3,
+        "切换关闭": 1,
+        "按钮": 73,
+        "SplitButton": 11,
+        "菜单项": 25,
+        "标题栏": 2,
+        "选项卡项目": 11,
+        "组合框": 3,
+        "组": 11,
+        "编辑框": 2,
+        "文档": 1,
+        "页面": 7,
+        "编辑": 7,
+        "目录": 1,
+        "字段": 1,
+        "形状": 7,
+        "表格": 4,
+        "项": 163,
+        "链接": 1,
+        "列表": 11,
+        "列表项目": 31,
+        "滚动条": 2,
+        "状态栏": 1,
+        "文本": 1,
+        "滑块": 1,
+        "Thumb": 2,
+        "菜单栏": 1
+      }
+    }
+  }
+}

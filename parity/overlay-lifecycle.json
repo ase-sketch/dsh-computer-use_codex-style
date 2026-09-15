@@ -1,0 +1,85 @@
+{
+  "gates": [
+    {
+      "name": "idle desktop shows exactly one pointer",
+      "ok": true,
+      "detail": "{\"fake\":false,\"banner\":false,\"suppressed\":false,\"managers\":0,\"pointers\":1}"
+    },
+    {
+      "name": "show draws the fake cursor",
+      "ok": true,
+      "detail": "{\"fake\":true,\"banner\":true,\"suppressed\":true,\"managers\":1,\"pointers\":1}"
+    },
+    {
+      "name": "show suppresses the real pointer",
+      "ok": true,
+      "detail": "{\"fake\":true,\"banner\":true,\"suppressed\":true,\"managers\":1,\"pointers\":1}"
+    },
+    {
+      "name": "show leaves exactly one pointer on screen",
+      "ok": true,
+      "detail": "{\"fake\":true,\"banner\":true,\"suppressed\":true,\"managers\":1,\"pointers\":1}"
+    },
+    {
+      "name": "show keeps a cursor-manager child alive",
+      "ok": true,
+      "detail": "{\"fake\":true,\"banner\":true,\"suppressed\":true,\"managers\":1,\"pointers\":1}"
+    },
+    {
+      "name": "cancel hides the overlay",
+      "ok": true,
+      "detail": "{\"fake\":false,\"banner\":false,\"suppressed\":false,\"managers\":0,\"pointers\":1}"
+    },
+    {
+      "name": "cancel restores the real pointer",
+      "ok": true,
+      "detail": "{\"fake\":false,\"banner\":false,\"suppressed\":false,\"managers\":0,\"pointers\":1}"
+    },
+    {
+      "name": "a later show still suppresses the real pointer",
+      "ok": true,
+      "detail": "{\"fake\":true,\"banner\":true,\"suppressed\":true,\"managers\":1,\"pointers\":1}"
+    },
+    {
+      "name": "a later show restarts the cursor manager",
+      "ok": true,
+      "detail": "{\"fake\":true,\"banner\":true,\"suppressed\":true,\"managers\":1,\"pointers\":1}"
+    },
+    {
+      "name": "an external restore is applied",
+      "ok": true,
+      "detail": "{\"restored\":true,\"suppressedRightAfter\":true}"
+    },
+    {
+      "name": "suppression is re-asserted while the overlay stays up",
+      "ok": true,
+      "detail": "{\"fake\":true,\"banner\":true,\"suppressed\":true,\"managers\":1,\"pointers\":1}"
+    },
+    {
+      "name": "the re-assertion came from the re-suppression timer",
+      "ok": true,
+      "detail": "{\"before\":6,\"after\":16}"
+    },
+    {
+      "name": "every suppress request was acknowledged",
+      "ok": true,
+      "detail": "{\"requests\":22,\"failures\":0}"
+    },
+    {
+      "name": "end_turn hides the overlay",
+      "ok": true,
+      "detail": "{\"fake\":false,\"banner\":false,\"suppressed\":false,\"managers\":0,\"pointers\":1}"
+    },
+    {
+      "name": "end_turn restores the real pointer",
+      "ok": true,
+      "detail": "{\"fake\":false,\"banner\":false,\"suppressed\":false,\"managers\":0,\"pointers\":1}"
+    },
+    {
+      "name": "diagnostics report the suppression state",
+      "ok": true,
+      "detail": "{\"suppressed\":false,\"manager\":false}"
+    }
+  ],
+  "helperStderr": ""
+}

@@ -1,0 +1,27 @@
+using System;
+using System.Drawing;
+using System.IO;
+using System.Windows.Forms;
+
+public class ParityTarget : Form {
+  public static TextBox Box;
+  public static Button Btn;
+  static readonly string LOG = Path.Combine(AppContext.BaseDirectory, "target-events.log");
+  public ParityTarget() {
+    Text = "Parity Target";
+    Width = 640; Height = 420;
+    StartPosition = FormStartPosition.Manual;
+    Left = 240; Top = 180;
+    var label = new Label { Text = "Parity probe label", Left = 24, Top = 24, Width = 320, Height = 24 };
+    Box = new TextBox { Text = "parity-initial", Left = 24, Top = 60, Width = 380, Height = 28, Name = "ParityBox" };
+    Btn = new Button { Text = "Parity Button", Left = 24, Top = 110, Width = 180, Height = 36, Name = "ParityButton" };
+    Controls.Add(label); Controls.Add(Box); Controls.Add(Btn);
+    Box.TextChanged += delegate { try { File.AppendAllText(LOG, "text=" + Box.Text + Environment.NewLine); } catch {} };
+    Btn.Click += delegate { Box.Text = "clicked-by-dsh"; try { File.AppendAllText(LOG, "button-clicked" + Environment.NewLine); } catch {} };
+  }
+  [STAThread]
+  public static void Main() {
+    Application.EnableVisualStyles();
+    Application.Run(new ParityTarget());
+  }
+}

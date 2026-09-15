@@ -1,0 +1,3 @@
+# Build output only. Cargo.lock IS tracked: this is a binary crate, so the lock file is
+# what makes a build reproducible.
+/target

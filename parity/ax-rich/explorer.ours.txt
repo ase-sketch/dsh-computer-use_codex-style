@@ -1,0 +1,253 @@
+Window: "Temp - 文件资源管理器", App: explorer.exe.
+	0 窗口 Temp - 文件资源管理器 Secondary Actions: Raise
+		1 窗格
+		2 窗格 Temp
+			3 窗格
+				4 窗格 详细信息窗格
+					5 窗格
+						6 窗格
+							7 组 Temp (5,811 个项目) ID: DetailsViewControlRootGrid
+								8 窗格
+									9 图像 当前所选内容缩略图 ID: Icon
+									10 文本 Temp (5,811 个项目)
+									11 文本 选择单个文件以获取详细信息并共享云内容。
+				12 状态栏 状态栏 ID: StatusBarModuleInner
+					13 组 属性字段 ID: System.StatusBarViewItemCount
+						14 文本 5,811 个项目 Description: 项目总数 ID: PropertyValue
+					15 组 查看模式 ID: ViewButtonsGroup
+						16 单选按钮 (selectable) 详细信息 Description: 在窗口中显示每一项的相关信息。(Ctrl+Alt+6) ID: ViewMode_Details
+						17 单选按钮 (selectable) 大图标 Description: 使用大缩略图显示项。(Ctrl+Alt+2) ID: ViewMode_LargeIcons
+				18 窗格 控制项宿主 ID: ProperTreeHost
+					19 树 导航窗格 ID: 100
+						20 滚动条 垂直滚动条 ID: NonClientVerticalScrollBar
+							21 按钮 上一行 ID: UpButton
+							22 按钮 向上翻页 ID: UpPageButton
+							23 缩略图 位置 ID: ScrollbarThumb
+							24 按钮 向下翻页 ID: DownPageButton
+							25 按钮 下一行 ID: DownButton
+						26 树项目 (selectable) 桌面
+							27 树项目 (selectable) 主文件夹
+							28 树项目 (selectable) 图库
+							29 树项目 (selectable) OneDrive - Personal
+							30 树项目 (selectable) OneDrive
+							31 树项目 (selectable) 视频
+							32 树项目 (selectable) 图片
+							33 树项目 (selectable) 文档
+							34 树项目 (selectable) 下载
+							35 树项目 (selectable) 音乐
+							36 树项目 (selectable) 桌面
+								37 树项目 (selectable) epic
+								38 树项目 (selectable) QQ机器人
+								39 树项目 (selectable) 编程
+								40 树项目 (selectable) 工具
+								41 树项目 (selectable) 媒体
+								42 树项目 (selectable) 图片
+								43 树项目 (selectable) 学习
+								44 树项目 (selectable) 游戏
+							45 树项目 (selectable) <user>
+							46 树项目 (selectable) 此电脑
+							47 树项目 (selectable) 库
+								48 树项目 (selectable) 保存的图片
+								49 树项目 (selectable) 本机照片
+								50 树项目 (selectable) 视频
+								51 树项目 (selectable) 图片
+								52 树项目 (selectable) 文档
+								53 树项目 (selectable) 音乐
+							54 树项目 (selectable) T9 (D:)
+							55 树项目 (selectable) 网络
+							56 树项目 (selectable) 控制面板
+							57 树项目 (selectable) Linux
+							58 树项目 (selectable) 回收站
+							59 树项目 (selectable) epic
+							60 树项目 (selectable) QQ机器人
+							61 树项目 (selectable) 编程
+							62 树项目 (selectable) 工具
+							63 树项目 (selectable) 媒体
+							64 树项目 (selectable) 图片
+							65 树项目 (selectable) 学习
+							66 树项目 (selectable) 游戏
+				67 窗格 Shell 文件夹视图 ID: listview
+					68 列表 项目视图
+						69 滚动条 水平 ID: HorizontalScrollBar
+							70 按钮 左移一列 ID: UpButton
+							71 缩略图 位置 ID: ScrollbarThumb
+							72 按钮 向右翻页 ID: DownPageButton
+							73 按钮 右移一列 ID: DownButton
+						74 滚动条 垂直 ID: VerticalScrollBar
+							75 按钮 上一行 ID: UpButton
+							76 缩略图 位置 ID: ScrollbarThumb
+							77 按钮 向下翻页 ID: DownPageButton
+							78 按钮 下一行 ID: DownButton
+						79 标头 标题
+							80 拆分按钮 名称 ID: System.ItemNameDisplay
+								81 按钮 筛选器下拉列表 ID: DropDown
+							82 拆分按钮 修改日期 ID: System.DateModified
+								83 按钮 筛选器下拉列表 ID: DropDown
+							84 拆分按钮 类型 ID: System.ItemTypeText
+								85 按钮 筛选器下拉列表 ID: DropDown
+							86 拆分按钮 大小 ID: System.Size
+								87 按钮 筛选器下拉列表 ID: DropDown
+						88 列表项目 (selectable) .dbeaver-temp3880619439617452759 ID: 0
+							89 编辑 名称 ID: System.ItemNameDisplay
+							90 编辑 修改日期 ID: System.DateModified
+							91 编辑 类型 ID: System.ItemTypeText
+							92 编辑 大小 ID: System.Size
+						93 列表项目 (selectable) .net ID: 1
+							94 编辑 名称 ID: System.ItemNameDisplay
+							95 编辑 修改日期 ID: System.DateModified
+							96 编辑 类型 ID: System.ItemTypeText
+							97 编辑 大小 ID: System.Size
+						98 列表项目 (selectable) .tmp6I4vju ID: 2
+							99 编辑 名称 ID: System.ItemNameDisplay
+							100 编辑 修改日期 ID: System.DateModified
+							101 编辑 类型 ID: System.ItemTypeText
+							102 编辑 大小 ID: System.Size
+						103 列表项目 (selectable) .tmp38dMBx ID: 3
+							104 编辑 名称 ID: System.ItemNameDisplay
+							105 编辑 修改日期 ID: System.DateModified
+							106 编辑 类型 ID: System.ItemTypeText
+							107 编辑 大小 ID: System.Size
+						108 列表项目 (selectable) .tmp165Ix0 ID: 4
+							109 编辑 名称 ID: System.ItemNameDisplay
+							110 编辑 修改日期 ID: System.DateModified
+							111 编辑 类型 ID: System.ItemTypeText
+							112 编辑 大小 ID: System.Size
+						113 列表项目 (selectable) .tmpavg4vZ ID: 5
+							114 编辑 名称 ID: System.ItemNameDisplay
+							115 编辑 修改日期 ID: System.DateModified
+							116 编辑 类型 ID: System.ItemTypeText
+							117 编辑 大小 ID: System.Size
+						118 列表项目 (selectable) .tmpbcuXhz ID: 6
+							119 编辑 名称 ID: System.ItemNameDisplay
+							120 编辑 修改日期 ID: System.DateModified
+							121 编辑 类型 ID: System.ItemTypeText
+							122 编辑 大小 ID: System.Size
+						123 列表项目 (selectable) .tmpbrHI2y ID: 7
+							124 编辑 名称 ID: System.ItemNameDisplay
+							125 编辑 修改日期 ID: System.DateModified
+							126 编辑 类型 ID: System.ItemTypeText
+							127 编辑 大小 ID: System.Size
+						128 列表项目 (selectable) .tmpcdjYTE ID: 8
+							129 编辑 名称 ID: System.ItemNameDisplay
+							130 编辑 修改日期 ID: System.DateModified
+							131 编辑 类型 ID: System.ItemTypeText
+							132 编辑 大小 ID: System.Size
+						133 列表项目 (selectable) .tmpCrsLZl ID: 9
+							134 编辑 名称 ID: System.ItemNameDisplay
+							135 编辑 修改日期 ID: System.DateModified
+							136 编辑 类型 ID: System.ItemTypeText
+							137 编辑 大小 ID: System.Size
+						138 列表项目 (selectable) .tmpCZL1BF ID: 10
+							139 编辑 名称 ID: System.ItemNameDisplay
+							140 编辑 修改日期 ID: System.DateModified
+							141 编辑 类型 ID: System.ItemTypeText
+							142 编辑 大小 ID: System.Size
+						143 列表项目 (selectable) .tmpd696HJ ID: 11
+							144 编辑 名称 ID: System.ItemNameDisplay
+							145 编辑 修改日期 ID: System.DateModified
+							146 编辑 类型 ID: System.ItemTypeText
+							147 编辑 大小 ID: System.Size
+						148 列表项目 (selectable) .tmpFnY5pg ID: 12
+							149 编辑 名称 ID: System.ItemNameDisplay
+							150 编辑 修改日期 ID: System.DateModified
+							151 编辑 类型 ID: System.ItemTypeText
+							152 编辑 大小 ID: System.Size
+						153 列表项目 (selectable) .tmpGaQTKp ID: 13
+							154 编辑 名称 ID: System.ItemNameDisplay
+							155 编辑 修改日期 ID: System.DateModified
+							156 编辑 类型 ID: System.ItemTypeText
+							157 编辑 大小 ID: System.Size
+						158 列表项目 (selectable) .tmpHkAJ7z ID: 14
+							159 编辑 名称 ID: System.ItemNameDisplay
+							160 编辑 修改日期 ID: System.DateModified
+							161 编辑 类型 ID: System.ItemTypeText
+							162 编辑 大小 ID: System.Size
+						163 列表项目 (selectable) .tmphSUHtG ID: 15
+							164 编辑 名称 ID: System.ItemNameDisplay
+							165 编辑 修改日期 ID: System.DateModified
+							166 编辑 类型 ID: System.ItemTypeText
+							167 编辑 大小 ID: System.Size
+						168 列表项目 (selectable) .tmpHzSO9w ID: 16
+							169 编辑 名称 ID: System.ItemNameDisplay
+							170 编辑 修改日期 ID: System.DateModified
+							171 编辑 类型 ID: System.ItemTypeText
+							172 编辑 大小 ID: System.Size
+						173 列表项目 (selectable) .tmpk7BOh6 ID: 17
+							174 编辑 名称 ID: System.ItemNameDisplay
+							175 编辑 修改日期 ID: System.DateModified
+							176 编辑 类型 ID: System.ItemTypeText
+							177 编辑 大小 ID: System.Size
+						178 列表项目 (selectable) .tmpL3Pgjc ID: 18
+							179 编辑 名称 ID: System.ItemNameDisplay
+							180 编辑 修改日期 ID: System.DateModified
+							181 编辑 类型 ID: System.ItemTypeText
+							182 编辑 大小 ID: System.Size
+						183 列表项目 (selectable) .tmplgJczn ID: 19
+							184 编辑 名称 ID: System.ItemNameDisplay
+							185 编辑 修改日期 ID: System.DateModified
+							186 编辑 类型 ID: System.ItemTypeText
+							187 编辑 大小 ID: System.Size
+						188 列表项目 (selectable) .tmpM8MMcL ID: 20
+							189 编辑 名称 ID: System.ItemNameDisplay
+							190 编辑 修改日期 ID: System.DateModified
+							191 编辑 类型 ID: System.ItemTypeText
+							192 编辑 大小 ID: System.Size
+		193 窗格
+			194 窗格
+				195 选项卡 ID: TabView
+					196 列表 ID: TabListView
+						197 选项卡项目 (selectable) Temp
+							198 图像
+							199 文本 Temp
+							200 按钮 关闭标签页 ID: CloseButton
+					201 按钮 添加新标签页 ID: AddButton
+				202 应用栏 ID: NavigationCommands
+					203 应用栏按钮 (disabled) 后退 Description: 后退 ID: backButton
+					204 应用栏按钮 (disabled) 前进 Description: 前进 ID: forwardButton
+					205 应用栏按钮 上移到“e (E:)”(Alt + 向上键) Description: 上移到“e (E:)”(Alt + 向上键) ID: upButton
+					206 应用栏按钮 刷新“Temp”(F5) Description: 刷新“Temp”(F5) ID: refreshButton
+				207 组 ID: PART_AutoSuggestBox
+					208 编辑 地址栏 ID: TextBox
+				209 拆分按钮 此电脑 ID: FirstCrumbStackPanel
+					210 图像
+				211 组 ID: PART_BreadcrumbBar
+					212 拆分按钮 此电脑
+						213 文本 此电脑
+					214 拆分按钮 e (E:)
+						215 文本 e (E:)
+					216 拆分按钮 Temp
+						217 文本 Temp
+				218 组 ID: FileExplorerSearchBox
+					219 编辑 在 Temp 中搜索 ID: TextBox
+						220 文本 在 Temp 中搜索
+				221 应用栏 ID: FileExplorerCommandBar
+					222 应用栏按钮 新建
+						223 图像
+					224 应用栏按钮 (disabled) 剪切​​ Description: 将所选项目移动到剪贴板。
+						225 图像
+					226 应用栏按钮 (disabled) 复制​​ Description: 将所选项目复制到剪贴板。
+						227 图像
+					228 应用栏按钮 (disabled) 粘贴​​ Description: 将剪贴板中的内容粘贴到当前位置。
+						229 图像
+					230 应用栏按钮 (disabled) 重命名​​ Description: 重命名所选项目。
+						231 图像
+					232 应用栏按钮 (disabled) 共享
+						233 图像
+					234 应用栏按钮 (disabled) 删除​​ Description: 将所选项目移动到回收站或将其永久删除。
+						235 图像
+					236 应用栏按钮 排序 ID: SortAndGroupButton
+						237 图像
+					238 应用栏按钮 查看
+						239 图像
+					240 按钮 更多选项 ID: MoreButton
+				241 应用栏 ID: FileExplorerSecondaryCommandBar
+					242 应用栏按钮 详细信息 Description: 显示或隐藏详细信息窗格。 ID: DetailsPaneToggleButton
+						243 图像
+		244 标题栏
+			245 菜单栏 系统 ID: MenuBar
+				246 菜单项 系统
+			247 按钮 最小化
+			248 按钮 最大化
+			249 按钮 关闭
+
+The focused UI element is 194 窗格.

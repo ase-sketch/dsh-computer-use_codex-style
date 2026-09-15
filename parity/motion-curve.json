@@ -1,0 +1,46 @@
+[
+  {
+    "label": "small",
+    "source": "d120",
+    "straight": 120,
+    "frames": 228,
+    "durationMs": 330,
+    "bulgePx": 1,
+    "bulgeRatio": 0.0083,
+    "landedErrPx": 0,
+    "pollSamples": 232
+  },
+  {
+    "label": "short",
+    "source": "d269",
+    "straight": 269,
+    "frames": 315,
+    "durationMs": 490,
+    "bulgePx": 17.47,
+    "bulgeRatio": 0.0649,
+    "landedErrPx": 0,
+    "pollSamples": 319
+  },
+  {
+    "label": "medium",
+    "source": "d400",
+    "straight": 400,
+    "frames": 326,
+    "durationMs": 676,
+    "bulgePx": 28,
+    "bulgeRatio": 0.07,
+    "landedErrPx": 0,
+    "pollSamples": 330
+  },
+  {
+    "label": "long",
+    "source": "d760",
+    "straight": 760,
+    "frames": 370,
+    "durationMs": 768,
+    "bulgePx": 71,
+    "bulgeRatio": 0.0934,
+    "landedErrPx": 0,
+    "pollSamples": 374
+  }
+]

@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schemaVersion": 1,
+  "purpose": "Single source of truth for the official (Codex/OpenAI computer-use) values that DSH re-implements. Rust and Python must agree with this file; a drift in either engine is a gate failure (CW-10, CW-16).",
+  "officialSource": {
+    "binary": "D:\\工作\\rust-reverse-2026\\cua-sky-decompile\\bin-sky\\codex-computer-use.sky.exe",
+    "imageBase": "0x140000000",
+    "decompilation": "D:\\工作\\rust-reverse-2026\\cua-sky-decompile\\ghidra-sky\\all_functions.c",
+    "strings": "D:\\工作\\rust-reverse-2026\\cua-sky-decompile\\out\\exe\\strings_all.txt",
+    "angr": "D:\\工作\\rust-reverse-2026\\cua-sky-decompile\\angr-sky\\all_rust.rs",
+    "pluginPackage": "%USERPROFILE%/.codex/plugins/cache/openai-bundled/computer-use/26.903.61454"
+  },
+  "capture": {
+    "jpegQuality": 0.8,
+    "jpegQualityEvidence": "PropertyValue::CreateSingle(0.8f); float @VA 0x14012c74c = cd cc 4c 3f; call sites listing 140043b6d / 140043bc0 inside FUN_140041f9b",
+    "imageQualityProperty": "ImageQuality",
+    "imageQualityStringVa": "0x14013a7f1",
+    "framePoolBuffers": 1,
+    "framePoolBuffersEvidence": "Direct3D11CaptureFramePool.CreateFreeThreaded(..., 1, size): all_functions.c L53825 (Recreate) and L232061 (Create)",
+    "cursorCapture": true,
+    "cursorCaptureEvidence": "listing 14003e341: MOV DL,0x1 then CALL [RAX+0x38] = SetIsCursorCaptureEnabled(true)",
+    "borderRequired": false,
+    "borderRequiredEvidence": "listing 14003e3df: XOR EDX,EDX then SetIsBorderRequired(false)",
+    "pixelFormat": 87,
+    "pixelFormatName": "B8G8R8A8UIntNormalized",
+    "alphaMode": 1,
+    "alphaModeName": "Premultiplied",
+    "pixelFormatEvidence": "all_functions.c L56761 validates (fmt != 0x57) || (alpha != 1)",
+    "scaleBaseDpi": 96,
+    "dpiLogicalPixels": "max(1, (v*96 + dpi/2)/dpi)",
+    "dpiLogicalPixelsEvidence": "FUN_14004572d @0x14004572d: (dpi/2 + v*0x60)/dpi, clamped up to 1 when < 2",
+    "pixelFormatGate": "official only errors on an unexpected pixel format; a non-premultiplied alpha is also an error",
+    "wgcOnlyPath": true,
+    "wgcOnlyPathEvidence": "PE import-name scan: PrintWindow/BitBlt/StretchBlt/GetDIBits/CreateCompatibleDC/GetDC/GetWindowDC all absent in the official helper"
+  },
+  "maxImageEdge": {
+    "official": null,
+    "officialEvidence": "0 hits for maxEdge/max_edge/maxImageEdge/imageEdge/1280/1568 across the 19,738-string table",
+    "dshExtension": 0,
+    "kind": "dsh-extension",
+    "note": "maxImageEdge is a DSH-only downscale on the Python/plugin surface (CW-15). The Rust helper has no such concept. Desktop screenshots must only undergo the official DPI normalisation above. 0 = disabled = official behaviour (decision D-E); a positive value is opt-in token saving."
+  },
+  "windowFilter": {
+    "predicateFunction": "FUN_140038342",
+    "predicateVa": "0x140038342",
+    "predicateDecompiled": "IsWindowVisible(hwnd) && !DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED) && !(GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) && ((ex & WS_EX_APPWINDOW) || GetWindow(hwnd, GW_OWNER) is NULL or the query failed)",
+    "wsExToolWindow": 128,
+    "wsExAppWindow": 262144,
+    "dwmwaCloaked": 14,
+    "hasTitleRequirement": false,
+    "hasMinimumArea": false,
+    "boundsFloor": "FUN_1400ab72d rejects only non-positive width/height or left/top <= -30000",
+    "excludedClasses": [
+      "default ime",
+      "msctfime ui",
+      "non client input sink window"
+    ],
+    "excludedClassesFunction": "FUN_1400ae6eb (string lengths 11/11/28)",
+    "packagedAppClasses": [
+      "Windows.UI.Core.CoreWindow",
+      "Windows.UI.Core.AppWindow"
+    ],
+    "packagedAppHostExes": [
+      "ApplicationFrameHost.exe",
+      "_proxy.exe",
+      "LockApp.exe"
+    ],
+    "packagedAppHostExesEvidence": "literal block @0x140134531 LockApp.exe / @0x14013453c ApplicationFrameHost.exe / @0x140134553 _proxy.exe",
+    "packagedAppMissingString": "no packaged app child window found",
+    "dshHostFrameClasses": [
+      "ApplicationFrameWindow"
+    ],
+    "dshHostFrameClassesNote": "CW-4 DSH addition: the UWP frame window is owned by ApplicationFrameHost.exe and carries no app identity. ApplicationFrameWindow is a Windows shell class with no literal in the official binary, so official reaches the real app through the child Windows.UI.Core.CoreWindow. Treating the frame class the same way is what keeps ApplicationFrameHost.exe out of list_windows."
+  },
+  "appIdentifier": {
+    "canonicalEmitted": "process:<full process image path>",
+    "prefixes": {
+      "process": "process:",
+      "path": "path:",
+      "registry": "registry:",
+      "appUserModelId": "app-user-model-id:",
+      "windowApp": "window-app:"
+    },
+    "prefixEvidence": "all_functions.c / angr all_rust.rs strip_prefix(\"process:\", 8); string table 0x137f21 registry:, 0x138478 app-user-model-id:, 0x132265 window-app:",
+    "ambiguousError": "app identifier {requested} is ambiguous; use the canonical app id from list_apps",
+    "missingProcessName": "process app identifier is missing a process name"
+  },
+  "userAssist": {
+    "key": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\UserAssist",
+    "countSubkey": "Count",
+    "rot13": true,
+    "countOffset": 4,
+    "lastUsedFiletimeOffset": 60,
+    "countKeyStringVa": "0x14013998d",
+    "countKeyString": "\\Count",
+    "uemePrefixHandling": "undetermined",
+    "uemePrefixNote": "CW-12: the literal UEME_ exists at 0x140139b20 but no LEA was located; the Rust helper skips UEME_* entries while the Python engine keeps them. Do not 'align' either side until the official xref is found."
+  },
+  "listAppsSort": {
+    "officialOrder": "undetermined",
+    "note": "CW-11: ListApps.d.ts declares fields only; no ordering evidence in the static analysis. DSH sorts is_running desc -> useCount desc -> displayName asc. Do not change without an official machine-readable sample."
+  },
+  "cursorMotion": {
+    "source": "Measured against the official helper on 2026-09-14: full-screen ULW layer CodexComputerUseCursorOverlay, PrintWindow centroid at ~30 Hz, resolution +/-40 ms. See analysis/deep-dive/11-official-sampling.md section 3. These settle times are externally observed, not binary constants.",
+    "singleSourceOfTruth": "helper-rs/src/overlay/motion.rs consts; the Rust test cursor_motion_constants_match_the_single_source fails on any drift in either direction.",
+    "snapDistancePx": 0.5,
+    "singleSegmentMaxPx": 196.0,
+    "singleSegmentDurationS": 0.34,
+    "durationMinS": 0.34,
+    "durationMaxS": 2.2,
+    "durationKnotsPxMs": [[196.0, 340.0], [269.0, 492.0], [400.0, 691.0], [760.0, 786.0]],
+    "durationTailMsPerPx": 0.264,
+    "diagonalOnsetPx": 300.0,
+    "diagonalSpanPx": 1600.0,
+    "diagonalMaxShorten": 0.45,
+    "backswingBasePx": 18.0,
+    "backswingPerPx": 0.01,
+    "backswingMaxPx": 28.0,
+    "bowRatioBase": 0.06,
+    "bowRatioPerPx": 0.000075,
+    "bowRatioMax": 0.16,
+    "backswingP1Factor": 2.0,
+    "backswingP2Factor": 1.0,
+    "bowR1Factor": 0.5,
+    "bowR2Factor": 1.0,
+    "bowR3Factor": 0.72,
+    "bowR4Factor": 0.3,
+    "bowR5Factor": 0.05,
+    "bowS3Fraction": 0.45,
+    "bowS4Fraction": 0.72,
+    "bowS5Fraction": 0.9,
+    "binaryShortDurationS": 0.24,
+    "binaryShortDurationNote": "14004b7e8 single-segment literal. Refuted for the observable settle: L=80/120/180 px measure 304-383 ms, and 0.34 s (singleSegmentDurationS) lands inside every +/-40 ms window. Kept for provenance only.",
+    "binaryBowAxisRad": 0.8028513,
+    "binaryBowAxisCos": 0.6946584,
+    "binaryBowAxisSin": 0.7193398,
+    "binaryBowAxisNote": "Fixed 46-degree screen axis in the binary (14004b7e8:364-369). The measured trajectories bow perpendicular to the chord, so the axis is retained as provenance; the empirical bow above builds the path.",
+    "binaryDurationClampS": [0.12, 2.2],
+    "binaryDurationPolynomial": "0.81 * (0.42 + 0.04 + 0.12*blend + 0.22*len_norm + 0.28*curve), len_norm = clamp((L-180)/760)",
+    "binaryDurationPolynomialNote": "14004b7e8:556-636. Refuted by the measured settle (25-63% short for L>=269 px, and monotone where the official is not); Rust keeps it as binary_duration_polynomial_s for provenance, plan() uses the measured curve.",
+    "samples": [
+      {"label": "d0", "L": 0, "dx": 0, "dy": 0, "tSettleMs": 0, "tSettleMinMs": 0, "tSettleMaxMs": 0, "t99Ms": 0, "bulgePx": 0.1, "pressPulseMs": 218, "note": "no translation (snap); the 218 ms centroid pulse is the press animation, whose official Scale keyframe is the separate 550 ms constant"},
+      {"label": "d80", "L": 80, "dx": 80, "dy": 0, "tSettleMs": 361, "tSettleMinMs": 316, "tSettleMaxMs": 406, "t99Ms": 304, "bulgePx": 2.0},
+      {"label": "d120", "L": 120, "dx": 120, "dy": 0, "tSettleMs": 304, "tSettleMinMs": 264, "tSettleMaxMs": 344, "t99Ms": 275, "bulgePx": 1.4},
+      {"label": "d180", "L": 180, "dx": 180, "dy": 0, "tSettleMs": 373, "tSettleMinMs": 324, "tSettleMaxMs": 423, "t99Ms": 297, "bulgePx": 0.7},
+      {"label": "d269", "L": 269.1, "dx": 200, "dy": 180, "tSettleMs": 492, "tSettleMinMs": 452, "tSettleMaxMs": 532, "t99Ms": 454, "bulgePx": 35.7},
+      {"label": "d400", "L": 400, "dx": 400, "dy": 0, "tSettleMs": 691, "tSettleMinMs": 651, "tSettleMaxMs": 731, "t99Ms": 604, "bulgePx": 19.8},
+      {"label": "d613", "L": 613.5, "dx": 580, "dy": 200, "tSettleMs": 678, "tSettleMinMs": 638, "tSettleMaxMs": 718, "t99Ms": 566, "bulgePx": 57.2},
+      {"label": "d760", "L": 760, "dx": 760, "dy": 0, "tSettleMs": 786, "tSettleMinMs": 746, "tSettleMaxMs": 826, "t99Ms": 639, "bulgePx": 46.9},
+      {"label": "d898", "L": 898.4, "dx": 860, "dy": 260, "tSettleMs": 735, "tSettleMinMs": 695, "tSettleMaxMs": 775, "t99Ms": 614, "bulgePx": 80.7},
+      {"label": "d998", "L": 998.6, "dx": 840, "dy": 540, "tSettleMs": 651, "tSettleMinMs": 611, "tSettleMaxMs": 691, "t99Ms": 505, "bulgePx": 104.3}
+    ],
+    "measuredBackswingPx": {"d400": 21.0, "d760": 22.2, "d998": 27.9},
+    "measuredBowRatio": {"d269": 0.133, "d400": 0.05, "d613": 0.093, "d760": 0.062, "d898": 0.09, "d998": 0.105, "singleSegment": "<=0.01"},
+    "knownLimit": "The internal law could not be separated from 10 samples: the measured settle is non-monotone in L (400->691 ms, 613->678 ms; 760->786 ms, 998->651 ms). The model keys on the externally observable chord law plus a diagonal-shortening term; it does not claim the binary's internal parameterisation."
+  },
+  "deviations": {
+    "owner": "DSH-specific choices that intentionally differ from the official binary. Every entry needs a reason and must not be presented as parity.",
+    "framePoolBuffers": 2,
+    "framePoolBuffersReason": "The arrival handler parks the newest frame in `latest`; with a single buffer the pool could not produce the next frame, so every screenshot froze on the first composition. Behaviour (encode the newest frame) matches official; only the buffer count differs.",
+    "gdiFallback": [
+      "gdi-bitblt",
+      "gdi-printwindow",
+      "gdi-screen-bitblt",
+      "gdi-window-bitblt"
+    ],
+    "gdiFallbackReason": "Official is WGC-only and fails loudly. DSH keeps GDI fallbacks for availability and surfaces the chosen path in captureState.path so the model can tell a frame may not reflect occlusion.",
+    "maxImageEdge": 0,
+    "maxImageEdgeReason": "Python/plugin-only; 0 disables it (official, no cap -- decision D-E); must never be applied to the desktop Rust path."
+  }
+}

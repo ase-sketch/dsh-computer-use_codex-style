@@ -1,0 +1,50 @@
+{
+  "official": {
+    "label": "official",
+    "alive": true,
+    "listRaw": "{\"id\":1,\"ok\":true,\"result\":[{\"app\":\"process:E:\\\\grok\\\\computer-use\\\\parity\\\\ParityTarget.exe\",\"id\":36523596,\"title\":\"Parity Target\"},{\"app\":\"MSEdge\",\"id\":1838692,\"title\":\"DSH 上跑的 Computer Use 插件 — DSH 本地构建 和另外 27 个页面 - 个人 - Microsoft​ Edge\"},{\"app\":\"process:C:\\\\Program Files\\\\Microsoft Office\\\\root\\\\Office16\\\\WINWORD.EXE\",\"id\":2752908,\"title\":\"03_关键时间节点与行动清单.docx  -  最后由用户保存  -  兼容性模式 - Word\"},{\"a",
+    "target": {
+      "app": "process:C:\\repo\\parity\\ParityTarget.exe",
+      "id": 36523596,
+      "title": "Parity Target"
+    },
+    "firstApproval": {
+      "app": "paritytarget.exe",
+      "displayName": "paritytarget",
+      "riskLevel": "low",
+      "allowPersistentApproval": true
+    },
+    "obsKeys": "accessibility,cacheDiagnostics,screenshots,window",
+    "accessibility": {
+      "focused_element": "2 编辑 Parity probe label ID: ParityBox",
+      "tree": "Window: \"Parity Target\", App: ParityTarget.exe.\n\t0 窗口 Parity Target Secondary Actions: Raise\n\t\t1 文本 Parity probe label ID: 14681076\n\t\t2 编辑 Parity probe label ID: ParityBox\n\t\t3 按钮 Parity Button ID: ParityButton\n\t\t4 标题栏\n\t\t\t5 菜单栏 系统 ID: MenuBar\n\t\t\t\t6 菜单项 系统\n\t\t\t7 按钮 最小化\n\t\t\t8 按钮 最大化\n\t\t\t9 按钮 关闭\n\nThe focused UI element is 2 编辑 Parity probe label ID: ParityBox."
+    },
+    "tree": "Window: \"Parity Target\", App: ParityTarget.exe.\n\t0 窗口 Parity Target Secondary Actions: Raise\n\t\t1 文本 Parity probe label ID: 14681076\n\t\t2 编辑 Parity probe label ID: ParityBox\n\t\t3 按钮 Parity Button ID: ParityButton\n\t\t4 标题栏\n\t\t\t5 菜单栏 系统 ID: MenuBar\n\t\t\t\t6 菜单项 系统\n\t\t\t7 按钮 最小化\n\t\t\t8 按钮 最大化\n\t\t\t9 按钮 关闭\n\nThe focused UI element is 2 编辑 Parity probe label ID: ParityBox.",
+    "focused": "2 编辑 Parity probe label ID: ParityBox",
+    "resultKeys": "accessibility,cacheDiagnostics,screenshots,window",
+    "secondTree": "Window: \"Parity Target\", App: ParityTarget.exe.\n\t0 窗口 Parity Target Secondary Actions: Raise\n\t\t1 文本 Parity probe label ID: 14681076\n\t\t2 编辑 Parity probe label ID: ParityBox\n\t\t3 按钮 Parity Button ID: ParityButton\n\t\t4 标题栏\n\t\t\t5 菜单栏 系统 ID: MenuBar\n\t\t\t\t6 菜单项 系统\n\t\t\t7 按钮 最小化\n\t\t\t8 按钮 最大化\n\t\t\t9 按钮 关闭\n\nThe focused UI element is 2 编辑 Parity probe label ID: ParityBox."
+  },
+  "ours": {
+    "label": "ours",
+    "alive": true,
+    "listRaw": "{\"id\":1,\"ok\":true,\"result\":[{\"app\":\"ParityTarget.exe\",\"id\":36523596,\"title\":\"Parity Target\"},{\"app\":\"msedge.exe\",\"id\":1838692,\"title\":\"DSH 上跑的 Computer Use 插件 — DSH 本地构建 和另外 27 个页面 - 个人 - Microsoft​ Edge\"},{\"app\":\"WindowsTerminal.exe\",\"id\":6625978,\"title\":\"FYP EEG MoE vs Loop Transformer Review - grok\"},{\"app\":\"WindowsTerminal.exe\",\"id\":8721042,\"title\":\"Codex Computer Use window2 1:1 reconstru… - ",
+    "target": {
+      "app": "ParityTarget.exe",
+      "id": 36523596,
+      "title": "Parity Target"
+    },
+    "obsKeys": "accessibility,cacheDiagnostics,rootScreenshotID,screenshotSpaces,screenshots,spaces,window",
+    "accessibility": {
+      "diff": false,
+      "document_text": "",
+      "focused_element": "2 编辑 Parity probe label (settable, string) Value: parity-initial ID: ParityBox",
+      "selected_elements": [],
+      "selected_text": "",
+      "tree": "Window: \"Parity Target\", App: ParityTarget.exe.\n\t0 窗口 Parity Target Secondary Actions: Raise\n\t\t1 文本 Parity probe label ID: 14681076\n\t\t2 编辑 Parity probe label (settable, string) Value: parity-initial ID: ParityBox\n\t\t3 按钮 Parity Button Secondary Actions: Raise ID: ParityButton\n\t\t4 标题栏 (settable, string) Value: Parity Target\n\t\t\t5 菜单栏 系统 ID: MenuBar\n\t\t\t\t6 菜单项 系统 (collapsed) Secondary Actions: Raise, Expand\n\t\t\t7 按钮 最小化 Secondary Actions: Raise\n\t\t\t8 按钮 最大化 Secondary Actions: Raise\n\t\t\t9 按钮 关闭 Secondary Actions: Raise\nThe focused UI element is 2 编辑 Parity probe label (settable, string) Value: parity-initial ID: ParityBox."
+    },
+    "tree": "Window: \"Parity Target\", App: ParityTarget.exe.\n\t0 窗口 Parity Target Secondary Actions: Raise\n\t\t1 文本 Parity probe label ID: 14681076\n\t\t2 编辑 Parity probe label (settable, string) Value: parity-initial ID: ParityBox\n\t\t3 按钮 Parity Button Secondary Actions: Raise ID: ParityButton\n\t\t4 标题栏 (settable, string) Value: Parity Target\n\t\t\t5 菜单栏 系统 ID: MenuBar\n\t\t\t\t6 菜单项 系统 (collapsed) Secondary Actions: Raise, Expand\n\t\t\t7 按钮 最小化 Secondary Actions: Raise\n\t\t\t8 按钮 最大化 Secondary Actions: Raise\n\t\t\t9 按钮 关闭 Secondary Actions: Raise\nThe focused UI element is 2 编辑 Parity probe label (settable, string) Value: parity-initial ID: ParityBox.",
+    "focused": "2 编辑 Parity probe label (settable, string) Value: parity-initial ID: ParityBox",
+    "resultKeys": "accessibility,cacheDiagnostics,rootScreenshotID,screenshotSpaces,screenshots,spaces,window",
+    "secondTree": "no accessibility-tree change"
+  }
+}

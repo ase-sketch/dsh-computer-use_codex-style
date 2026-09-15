@@ -1,0 +1,414 @@
+Window: "03_关键时间节点与行动清单.docx - 最后由用户保存 - 兼容性模式 - Word", App: WINWORD.EXE.
+	0 窗口 03_关键时间节点与行动清单.docx - 最后由用户保存 - 兼容性模式 - Word Secondary Actions: Raise
+		1 窗格 (disabled) DropShadowTop
+		2 窗格 MsoDockTop
+			3 工具栏 Description: Ribbon 工具栏
+				4 窗格 Ribbon
+					5 窗格
+						6 窗格 Secondary Actions: Raise
+							7 窗格 Ribbon
+								8 工具栏 快速访问工具栏
+									9 切换关闭  自动保存 ID: AutoSaveSwitch
+									10 按钮 保存 ID: FileSave
+									11 SplitButton (disabled) 无法撤消 ID: Undo
+										12 按钮 (disabled) 无法撤消
+										13 菜单项 (disabled) 更多选项 ID: Undo_Dropdown
+									14 按钮 (disabled) 无法重复 ID: RedoOrRepeat
+									15 按钮 段落... ID: ParagraphDialog
+									16 按钮 转换 ID: EquationConvert
+									17 SplitButton (disabled) 公式 ID: EquationInsertGallery
+										18 按钮 (disabled) 公式
+										19 菜单项 (disabled) 更多选项 ID: EquationInsertGallery_Dropdown
+									20 菜单项 自定义快速访问工具栏
+								21 标题栏 ‪03_关键时间节点与行动清单.docx - 最后由用户保存 - 兼容性模式‬ - 已保存到这台电脑
+									22 菜单项 (disabled) ‪03_关键时间节点与行动清单.docx - 最后由用户保存 - 兼容性模式‬ - 已保存到这台电脑
+								23 按钮 搜索 ID: SearchToggleButton
+								24 菜单项 Xia Zihang ID: MeControlWidget
+								25 按钮 最小化
+								26 按钮 最大化
+								27 按钮 关闭
+								28 按钮 “文件”选项卡 ID: FileTabButton
+								29 窗格 功能区选项卡
+									30 选项卡项目 (selectable) 开始 ID: TabHome
+									31 选项卡项目 (selectable) 插入 ID: TabInsert
+									32 选项卡项目 (selectable) 绘图 ID: TabDrawInk
+									33 选项卡项目 (selectable) 设计 ID: TabWordDesign
+									34 选项卡项目 (selectable) 布局 ID: TabPageLayoutWord
+									35 选项卡项目 (selectable) 引用 ID: TabReferences
+									36 选项卡项目 (selectable) 邮件 ID: TabMailings
+									37 选项卡项目 (selectable) 审阅 ID: TabReviewWord
+									38 选项卡项目 (selectable) 视图 ID: TabView
+									39 选项卡项目 (selectable) 帮助 ID: HelpTab
+									40 选项卡项目 (selectable) Acrobat
+									41 按钮 批注
+									42 组合框 编辑
+									43 菜单项 共享
+								44 窗格 下层功能区
+									45 组 开始
+										46 组 剪贴板
+											47 SplitButton 粘贴
+												48 按钮 粘贴 ID: Paste
+												49 菜单项 更多选项 ID: PasteMenu_Dropdown
+											50 按钮 (disabled) 剪切 ID: Cut
+											51 按钮 (disabled) 复制 ID: Copy
+											52 按钮 格式刷 ID: FormatPainter
+											53 按钮 Office 剪贴板... ID: ShowClipboard
+										54 组 字体
+											55 组合框 字体 ID: Font
+												56 编辑框 字体
+												57 按钮 打开
+											58 组合框 字号 ID: FontSize
+												59 编辑框 字号
+												60 按钮 打开
+											61 按钮 增大字体 ID: FontSizeIncreaseWord
+											62 按钮 缩小字体 ID: FontSizeDecreaseWord
+											63 菜单项 更改大小写 ID: ChangeCaseGallery
+											64 按钮 清除格式 ID: ClearFormatting
+											65 按钮 (disabled) 拼音指南... ID: AsianLayoutPhoneticGuide
+											66 按钮 字符边框 ID: CharacterBorder
+											67 按钮 加粗 ID: Bold
+											68 按钮 倾斜 ID: Italic
+											69 SplitButton 下划线 ID: UnderlineGallery
+												70 按钮 下划线
+												71 菜单项 更多选项 ID: UnderlineGallery_Dropdown
+											72 按钮 删除线 ID: Strikethrough
+											73 按钮 下标 ID: Subscript
+											74 按钮 上标 ID: Superscript
+											75 菜单项 (disabled) 文本效果和版式 ID: TextEffectsGallery
+											76 SplitButton 文本突出显示颜色 ID: TextHighlightColorPicker
+												77 按钮 文本突出显示颜色 黄色
+												78 菜单项 更多选项 ID: TextHighlightColorPicker_Dropdown
+											79 SplitButton 字体颜色 ID: FontColorPicker
+												80 按钮 字体颜色 RGB(255, 0, 0)
+												81 菜单项 更多选项 ID: FontColorPicker_Dropdown
+											82 按钮 字符底纹 ID: CharacterShading
+											83 按钮 (disabled) 带圈字符... ID: AsianLayoutCharactersEnclose
+											84 按钮 字体... ID: FontDialog
+										85 组 段落
+											86 SplitButton 项目符号 ID: BulletsGalleryWord
+												87 按钮 项目符号
+												88 菜单项 更多选项 ID: BulletsGalleryWord_Dropdown
+											89 SplitButton 编号 ID: NumberingGalleryWord
+												90 按钮 编号
+												91 菜单项 更多选项 ID: NumberingGalleryWord_Dropdown
+											92 菜单项 多级列表 ID: MultilevelListGallery
+											93 按钮 减少缩进量 ID: IndentDecreaseWord
+											94 按钮 增加缩进量 ID: IndentIncreaseWord
+											95 菜单项 中文版式 ID: AsianLayoutMenu
+											96 按钮 排序... ID: SortDialogClassic
+											97 按钮 显示/隐藏编辑标记 ID: EastAsianEditingMarks
+											98 按钮 左对齐 ID: AlignLeft
+											99 按钮 居中 ID: AlignCenter
+											100 按钮 右对齐 ID: AlignRight
+											101 按钮 两端对齐 ID: AlignJustify
+											102 按钮 分散对齐 ID: ParagraphDistributed
+											103 菜单项 行和段落间距 ID: LineSpacingGallery
+											104 SplitButton 底纹 ID: ShadingColorPicker
+												105 按钮 底纹 RGB(0, 0, 0)
+												106 菜单项 更多选项 ID: ShadingColorPicker_Dropdown
+											107 SplitButton 边框 ID: BordersSelectionGallery
+												108 按钮 边框
+												109 菜单项 更多选项 ID: BordersSelectionGallery_Dropdown
+											110 按钮 段落... ID: ParagraphDialog
+										111 组 样式
+											112 菜单项 样式 ID: QuickStylesGallery
+											113 按钮 样式... ID: StylesPane
+										114 组 编辑
+											115 菜单项 编辑
+										116 组 Adobe Acrobat
+											117 按钮 创建并共享 Adobe PDF
+											118 按钮 请求签名
+										119 组 语音
+											120 SplitButton 听写
+												121 按钮 听写 ID: Dictate
+												122 菜单项 更多选项 ID: DictationMenu_Dropdown
+										123 组 敏感度
+											124 菜单项 (disabled) 敏感度 ID: ClassifyLabelProtect
+										125 组 编辑器
+											126 按钮 编辑器 ID: WritingAssistanceCheckDocument
+										127 组 加载项
+											128 按钮 加载项 ID: OfficeExtensionsShowAddinFlyout
+								129 菜单项 功能区显示选项
+		130 窗格
+			131 窗格 03_关键时间节点与行动清单.docx - 最后由用户保存 - 兼容性模式
+				132 文档 03_关键时间节点与行动清单.docx - 最后由用户保存 - 兼容性模式
+					133 页面 页面 1 ID: UIA_AutomationId_Word_Page_1
+						134 编辑 页面 1 内容 ID: Body
+							135 目录 目录
+								136 字段 toc
+							137 形状 横线
+							138 表格
+								139 项
+								140 项
+								141 项
+								142 项
+								143 项
+								144 项
+								145 项
+								146 项
+								147 项
+								148 项
+								149 项
+								150 项
+								151 项
+								152 项
+								153 项
+								154 项
+								155 项
+								156 项
+								157 项
+								158 项
+								159 项
+								160 项
+								161 项
+								162 项
+								163 项
+								164 项
+								165 项
+								166 项
+								167 项
+								168 项
+									169 链接 shchung@nus.edu.sg
+								170 项
+								171 项
+								172 项
+								173 项
+								174 项
+								175 项
+								176 项
+								177 项
+								178 项
+								179 项
+								180 项
+								181 项
+								182 项
+								183 项
+								184 项
+								185 项
+								186 项
+								187 项
+								188 项
+								189 项
+								190 项
+								191 项
+								192 项
+								193 项
+								194 项
+								195 项
+								196 项
+								197 项
+								198 项
+								199 项
+								200 项
+								201 项
+								202 项
+								203 项
+								204 项
+								205 项
+								206 项
+								207 项
+								208 项
+								209 项
+								210 项
+								211 项
+								212 项
+								213 项
+								214 项
+								215 项
+								216 项
+								217 项
+								218 项
+								219 项
+								220 项
+								221 项
+								222 项
+								223 项
+								224 项
+								225 项
+								226 项
+								227 项
+								228 项
+								229 项
+					230 页面 页面 2 ID: UIA_AutomationId_Word_Page_2
+						231 编辑 页面 2 内容 ID: Body
+					232 页面 页面 3 ID: UIA_AutomationId_Word_Page_3
+						233 编辑 页面 3 内容 ID: Body
+							234 形状 横线
+							235 列表
+								236 列表项目 1.
+								237 列表项目 2.
+								238 列表项目 3.
+							239 列表
+								240 列表项目 4.
+								241 列表项目 5.
+								242 列表项目 6.
+								243 列表项目 7.
+							244 列表
+								245 列表项目 8.
+								246 列表项目 9.
+								247 列表项目 10.
+								248 列表项目 11.
+							249 列表
+								250 列表项目 12.
+								251 列表项目 13.
+					252 页面 页面 4 ID: UIA_AutomationId_Word_Page_4
+						253 编辑 页面 4 内容 ID: Body
+							254 列表
+								255 列表项目 14.
+								256 列表项目 15.
+							257 列表
+								258 列表项目 16.
+								259 列表项目 17.
+							260 列表
+								261 列表项目 o
+							262 列表
+								263 列表项目 18.
+								264 列表项目 19.
+								265 列表项目 20.
+								266 列表项目 21.
+							267 形状 横线
+							268 表格
+								269 项
+								270 项
+								271 项
+								272 项
+								273 项
+								274 项
+								275 项
+								276 项
+								277 项
+								278 项
+								279 项
+								280 项
+								281 项
+								282 项
+								283 项
+								284 项
+								285 项
+								286 项
+								287 项
+								288 项
+								289 项
+								290 项
+								291 项
+								292 项
+								293 项
+								294 项
+								295 项
+								296 项
+								297 项
+								298 项
+								299 项
+								300 项
+								301 项
+								302 项
+								303 项
+								304 项
+								305 项
+								306 项
+								307 项
+					308 页面 页面 5 ID: UIA_AutomationId_Word_Page_5
+						309 编辑 页面 5 内容 ID: Body
+							310 形状 横线
+							311 表格
+								312 项
+								313 项
+								314 项
+								315 项
+								316 项
+								317 项
+								318 项
+								319 项
+								320 项
+								321 项
+								322 项
+								323 项
+								324 项
+								325 项
+								326 项
+								327 项
+								328 项
+								329 项
+								330 项
+								331 项
+								332 项
+								333 项
+					334 页面 页面 6 ID: UIA_AutomationId_Word_Page_6
+						335 编辑 页面 6 内容 ID: Body
+							336 形状 横线
+							337 表格
+								338 项
+								339 项
+								340 项
+								341 项
+								342 项
+								343 项
+								344 项
+								345 项
+								346 项
+								347 项
+								348 项
+								349 项
+							350 列表
+								351 列表项目 
+								352 列表项目 
+								353 列表项目 
+							354 形状 横线
+							355 列表
+								356 列表项目 1.
+								357 列表项目 2.
+								358 列表项目 3.
+					359 页面 页面 7 ID: UIA_AutomationId_Word_Page_7
+						360 编辑 页面 7 内容 ID: Body
+							361 列表
+								362 列表项目 4.
+								363 列表项目 5.
+								364 列表项目 6.
+							365 形状 横线
+				366 窗格 垂直
+					367 窗格 Secondary Actions: Raise
+						368 滚动条
+				369 窗格 水平
+					370 窗格 Secondary Actions: Raise
+						371 滚动条
+				372 窗格
+		373 窗格 MsoDockBottom
+			374 工具栏 Description: 状态栏 工具栏
+				375 窗格 状态栏
+					376 窗格
+						377 窗格 Secondary Actions: Raise
+							378 状态栏 状态栏
+								379 按钮 页码 第 1 页，共 7 页
+								380 文本 字数统计 3301 个字
+								381 按钮 共同创作模式
+								382 按钮 拼写和语法检查 无错误
+								383 按钮 语言 英语(美国)
+								384 按钮 文本预测 文本预测: 打开
+								385 按钮 改写 插入
+								386 按钮 专注
+								387 按钮 选取模式
+								388 按钮 打印布局
+								389 按钮 Web 版式
+								390 按钮 缩小(Ctrl -)
+								391 滑块 缩放
+									392 按钮 缩小
+									393 Thumb 控件 位置
+									394 按钮 放大
+								395 按钮 放大(Ctrl +)
+								396 按钮 缩放 134%
+								397 Thumb 控件 调整框大小
+		398 标题栏
+			399 菜单栏 系统 ID: MenuBar
+				400 菜单项 系统
+			401 按钮 最小化
+			402 按钮 最大化
+			403 按钮 关闭
+
+Document text: ```
+4. 津贴提醒月份：说明会写"如果到 8 月底仍未收到津贴请通知实习经理"——这是沿用更早批次的排期；按本批次 9 月 7 日开学，实际应关注的是之后的月份。
+5. 上传平台：指南第 4 节提到旧系统 IVLE，其他各处均为 NUS Canvas。→ 以 Canvas 为准。
+6. 指南缺第 7 节：正文编号从 6 直接跳到 8（原文如此）。
+
+七、一句话总结
+在 2026 年 9 月 7 日至 2027 年 1 月 22 日的 20 周里，你需要在公司完成一个真实的 IT 项目（分析 → 设计 → 实施 → 测试 → 部署），每周六交进度报告，第 1 周交项目计划，2026 年 9 月 11 日前联系 ISS 导师，10 月 14 日前后主动组织一次三方进度会，2027 年 1 月 9 日前催公司主管提交评估表，1 月 22 日完成交接与结清，1 月 24 日前交齐报告/海报/PPT 等全部材料，1 月 27–29 日面向 ISS 导师和独立评审员做演示。实习必须通过，否则整个文凭课程不及格。
+```

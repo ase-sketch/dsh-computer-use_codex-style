@@ -1,0 +1,38 @@
+# HOST plane: exclusive desktop sidecar (pointer, overlay, capture, extension hub).
+# Tools stay in the user agent preset so standard coding sessions do not get the mouse.
+- insert:
+    - id: computer-use
+      name: dsh-computer-use
+      config:
+        backend: windows
+        # The official 13-method window2 surface. `gated` used to fall through to
+        # the whole 18-row table (TC-01).
+        surface: computer
+        stealFocus: true
+        # DSH extension, official has no max-edge cap
+        # (parity/official-constants.json: maxImageEdge.official = null).
+        # 0 = official behaviour (no downscale). Set e.g. 1280 to trade image quality
+        # for tokens; that trade-off is opt-in (register D-E).
+        maxImageEdge: 0
+        # DSH-only: scale of the synthetic cursor sprite (1 = the official size, which is
+        # round(dpi * 1.3125) = 189 px on a 150% desktop). The overlay follows the display
+        # DPI alone and never reads or writes the Windows cursor-size setting, so this knob
+        # cannot change the local desktop pointer. 0.5 is half the official size.
+        cursorScale: 0.5
+        approveLaunch: true
+        # Official transport budgets (helper_transport.js): 10 s everywhere,
+        # 15 s for launch_app. Timeouts kill the helper and reject all pending
+        # requests unless preserveHelperOnTimeout is set.
+        timeoutMs: 10000
+        launchAppTimeoutMs: 15000
+        preserveHelperOnTimeout: false
+        # Startup budget. Official `.mcp.json` uses `startup_timeout_sec: 120`; a
+        # helper that never becomes ready must reject, not hang (MCP-05).
+        startupTimeoutMs: 15000
+        # Extra environment names forwarded on top of the shipped allowlist. A
+        # helper never inherits the whole parent environment (MCP-08).
+        envAllowlist: []
+        # Official has no time-based observation expiry; freshness is window
+        # identity + bounds + the human-input monitor. There is deliberately no
+        # expiry knob here (PSG-9): the official contract has no such field.
+        allowedApps: []
