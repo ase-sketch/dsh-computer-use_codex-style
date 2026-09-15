@@ -241,6 +241,13 @@ struct Ui {
     visible: bool,
     snapped: bool,
     device_lost: bool,
+    /// A hide happened since the last show. Hiding the overlay windows with SW_HIDE /
+    /// HWND_BOTTOM drops the layered surface (ULW) and the composition content (DComp),
+    /// and the window stays blank when it is shown again: the visible/topmost/painted
+    /// state looks perfect while nothing reaches the screen. The official helper never
+    /// meets this because it is per-turn and builds fresh windows; this helper is reused
+    /// across turns, so the next show rebuilds instead of trusting the stale window.
+    hidden_since_show: bool,
     last_recreate: Instant,
     display: Option<DisplayHold>,
     cursor_stage: Option<CursorHold>,
@@ -537,6 +544,11 @@ pub fn diagnostics() -> serde_json::Value {
         // DSH-only scale knob. Surfaced so a smaller pointer can be confirmed from
         // computer_use_health without measuring the screen.
         object.insert("cursorScale".to_string(), serde_json::json!(cursor_scale()));
+        object.insert("workerVisible".to_string(), serde_json::json!(WORKER_VISIBLE.load(Ordering::Relaxed)));
+        object.insert(
+            "pillLastAlpha".to_string(),
+            serde_json::json!(f32::from_bits(PILL_LAST_ALPHA_BITS.load(Ordering::Relaxed))),
+        );
         let (sprite_px, hotspot_px) = cursor_metrics(unsafe { GetDpiForSystem() });
         object.insert("cursorSpritePx".to_string(), serde_json::json!(sprite_px));
         object.insert("cursorHotspotPx".to_string(), serde_json::json!(hotspot_px));
@@ -601,6 +613,13 @@ static PUMP_PILL: AtomicU64 = AtomicU64::new(0);
 static PILL_BUILDS: AtomicU64 = AtomicU64::new(0);
 static PILL_BUILD_FAILS: AtomicU64 = AtomicU64::new(0);
 static PILL_PUSHES: AtomicU64 = AtomicU64::new(0);
+/// The alpha of the most recent layered push, as f32 bits. A window that is visible,
+/// topmost and painted can still be blank when the pushed alpha is ~0, and nothing else
+/// in the API surface distinguishes those two states.
+static PILL_LAST_ALPHA_BITS: AtomicU32 = AtomicU32::new(0);
+/// The overlay worker's own `ui.visible` (the parent's VISIBLE flag is set before the
+/// Show command is even consumed, so it cannot answer "did apply_show run"?
+static WORKER_VISIBLE: AtomicBool = AtomicBool::new(false);
 static PILL_PUSH_FAILS: AtomicU64 = AtomicU64::new(0);
 static PILL_PAINT_CALLS: AtomicU64 = AtomicU64::new(0);
 static MOTION_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -1618,6 +1637,7 @@ fn ui_loop(rx: mpsc::Receiver<Cmd>, hwnd_slot: std::sync::Arc<Mutex<Vec<isize>>>
             visible: false,
             snapped: false,
             device_lost: false,
+            hidden_since_show: false,
             last_recreate: Instant::now() - Duration::from_secs(1),
             display: if hwnd.0.is_null() || !dcomp_overlay_enabled() {
                 None
@@ -1652,6 +1672,12 @@ fn ui_loop(rx: mpsc::Receiver<Cmd>, hwnd_slot: std::sync::Arc<Mutex<Vec<isize>>>
                         if FORCE_HIDDEN.load(Ordering::SeqCst) {
                             apply_hide(&mut ui);
                         } else {
+                            if ui.hidden_since_show {
+                                // Never re-show the window a hide blanked (see
+                                // `hidden_since_show`): rebuild it first, then show.
+                                rebuild_overlay(&mut ui, &hwnd_slot);
+                                ui.hidden_since_show = false;
+                            }
                             apply_show(&mut ui);
                         }
                         send_reply(reply, Ok(()));
@@ -1989,6 +2015,7 @@ fn create_cursor_window() -> windows::core::Result<HWND> {
 
 fn apply_show(ui: &mut Ui) {
     ui.visible = true;
+    WORKER_VISIBLE.store(true, Ordering::Relaxed);
     // show() already suppressed the pointer; only schedule the next re-assertion.
     ui.next_suppress = Instant::now() + SUPPRESS_EVERY;
     let (vx, vy, vw, vh) = virtual_desktop();
@@ -2078,6 +2105,8 @@ fn apply_show(ui: &mut Ui) {
 
 fn apply_hide(ui: &mut Ui) {
     ui.visible = false;
+    ui.hidden_since_show = true;
+    WORKER_VISIBLE.store(false, Ordering::Relaxed);
     ui.snapped = false;
     stop_cursor_motion(ui);
     stop_pill_pulse();
@@ -2130,11 +2159,18 @@ fn finish_hide(ui: &mut Ui) {
 
 fn recreate(ui: &mut Ui, hwnd_slot: &std::sync::Arc<Mutex<Vec<isize>>>) {
     let now = Instant::now();
-    RECREATES.fetch_add(1, Ordering::Relaxed);
     if now.duration_since(ui.last_recreate) < Duration::from_millis(450) {
         return;
     }
     ui.last_recreate = now;
+    rebuild_overlay(ui, hwnd_slot);
+}
+
+/// Destroy and rebuild the overlay windows, re-attaching the composition display.
+/// Split out of `recreate` so the show-after-hide path can force it: that window can
+/// never render again, so the 450 ms device-lost throttle must not apply to it.
+fn rebuild_overlay(ui: &mut Ui, hwnd_slot: &std::sync::Arc<Mutex<Vec<isize>>>) {
+    RECREATES.fetch_add(1, Ordering::Relaxed);
     stop_cursor_motion(ui);
     ui.display = None;
     ui.cursor_stage = None;
@@ -2166,7 +2202,9 @@ fn recreate(ui: &mut Ui, hwnd_slot: &std::sync::Arc<Mutex<Vec<isize>>>) {
         ui.edge_left = HWND::default();
         ui.edge_right = HWND::default();
         publish_hwnds4(hwnd_slot, ui.hwnd, ui.cursor, HWND::default(), HWND::default());
-        ui.display = attach_display(hwnd);
+        // Same renderer choice as the initial setup: a rebuild must not silently switch a
+        // host that asked for the layered fallback onto the composition path.
+        ui.display = if dcomp_overlay_enabled() { attach_display(hwnd) } else { None };
         ui.cursor_stage = None;
         DISPLAY_COMPOSITION.store(ui.display.is_some(), Ordering::SeqCst);
         CURSOR_STAGE.store(ui.cursor_stage.is_some(), Ordering::SeqCst);
@@ -4104,6 +4142,7 @@ fn paint_pill(hwnd: HWND, alpha: f32) -> bool {
     let width = sprite.layout.width.round().max(1.0) as i32 + sprite.pad * 2;
     let height = sprite.layout.height.round().max(1.0) as i32 + sprite.pad * 2;
     PILL_PUSHES.fetch_add(1, Ordering::Relaxed);
+    PILL_LAST_ALPHA_BITS.store(alpha.to_bits(), Ordering::Relaxed);
     let ok = push_layered_bgra(
         hwnd,
         sprite.layout.x.round() as i32 - sprite.pad,

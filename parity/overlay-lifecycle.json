@@ -48,7 +48,7 @@
     {
       "name": "an external restore is applied",
       "ok": true,
-      "detail": "{\"restored\":true,\"suppressedRightAfter\":true}"
+      "detail": "{\"restored\":true,\"suppressedRightAfter\":false}"
     },
     {
       "name": "suppression is re-asserted while the overlay stays up",
@@ -58,12 +58,12 @@
     {
       "name": "the re-assertion came from the re-suppression timer",
       "ok": true,
-      "detail": "{\"before\":6,\"after\":16}"
+      "detail": "{\"before\":8,\"after\":18}"
     },
     {
       "name": "every suppress request was acknowledged",
       "ok": true,
-      "detail": "{\"requests\":22,\"failures\":0}"
+      "detail": "{\"requests\":24,\"failures\":0}"
     },
     {
       "name": "end_turn hides the overlay",
