@@ -38,6 +38,17 @@ analysis/
 # inside the plugin folder, so it must never be committed or packed.
 .experience/
 
+# --- Machine-local app catalog cache (helper runtime state) ----------------
+# The Rust helper keeps the installed-app catalog in
+# %LOCALAPPDATA%computer-use-app-catalog -- shell-apps.json plus the slow-request log. It
+# lists THIS machine's installed applications and their paths, so it is per-user state that
+# must never be committed. The path comes from LOCALAPPDATA and is therefore outside the
+# repository already; these patterns are the belt for a test or a probe that points
+# LOCALAPPDATA at the checkout, where the file would otherwise appear as untracked.
+computer-use-app-catalog/
+shell-apps.json
+slow-requests.log
+
 # --- Local machine state and research scratch (not part of the plugin) -----
 .grok/
 _session-diary*/
