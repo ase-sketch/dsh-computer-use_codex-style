@@ -111,13 +111,18 @@ export const Config = Schema.object({
   launchAppTimeoutMs: Schema.number().default(15000),
   /**
    * DSH extension: budget for `list_apps`, the one method that builds the installed-app
-   * catalog before it can answer. The official transport gives every request 10 s and
-   * *kills* the helper when that expires -- which throws the warm catalog away and makes
-   * the next attempt cold again, so a slow-but-healthy catalog becomes three timeouts and
-   * a dead turn. Measured 0.2-0.6 s warm on this machine; the first build on a busy
-   * machine (filesystem, antivirus) is the case this budget exists for.
+   * catalog before it can answer. Two constraints set it:
+   *
+   * - It must stay **below DSH's own tool-call budget (25 s)**. Otherwise the harness
+   *   aborts the tool call first, and an abort is a heavier event than a clean timeout.
+   * - It must be larger than the official 10 s, because a transport timeout *kills* the
+   *   helper and therefore throws the warm catalog away. The sidecar's `keepAlive` keeps
+   *   the helper alive for this method, so a slow build no longer costs the cache either.
+   *
+   * Measured 0.2-0.6 s warm once the request path stopped opening executables; a stale
+   * catalog on a machine whose antivirus scans every open is the case this exists for.
    */
-  listAppsTimeoutMs: Schema.number().default(30000),
+  listAppsTimeoutMs: Schema.number().default(20000),
   /**
    * Helper startup budget in ms. Official `.mcp.json` uses
    * `startup_timeout_sec: 120`; a helper that never becomes ready must reject
@@ -191,7 +196,7 @@ export default class ComputerUseService extends Service {
       approveLaunch: true,
       timeoutMs: 10000,
       launchAppTimeoutMs: 15000,
-      listAppsTimeoutMs: 30000,
+      listAppsTimeoutMs: 20000,
       startupTimeoutMs: 15000,
       envAllowlist: [],
       preserveHelperOnTimeout: false,

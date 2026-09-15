@@ -160,7 +160,7 @@ class HelperProcess {
     this.child.stdin.write(`${JSON.stringify(message)}\n`)
   }
 
-  rawRequest(method, params = {}, signal, timeoutMs, meta) {
+  rawRequest(method, params = {}, signal, timeoutMs, meta, keepAlive = false) {
     const id = this.nextId++
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -168,7 +168,12 @@ class HelperProcess {
         // Official transport: a timeout kills the helper and rejects every
         // pending request, because the helper's state can no longer be trusted.
         // preserveHelperOnTimeout keeps it alive for debugging only.
-        if (this.preserveOnTimeout) {
+        //
+        // `keepAlive` is the narrower version of that for a request that is *slow* rather
+        // than wedged: the installed-app catalog of `list_apps` keeps making progress (the
+        // slow-request log shows it finishing after the budget), and killing the helper
+        // throws the warm catalog away, so the next attempt would be cold again.
+        if (this.preserveOnTimeout || keepAlive) {
           finish(reject, error)
           return
         }
@@ -197,7 +202,16 @@ class HelperProcess {
       }
       const onAbort = () => {
         try {
-          this.write({ id: this.nextId++, method: 'interrupt', params: {} })
+          // `cancel` only drops the overlay and the in-flight action
+          // (`interrupt::cancel_work`). It must NOT be `interrupt`: that RPC latches the
+          // turn as stopped, which the helper reports as "stopped by the user with the
+          // physical Escape key". A DSH tool call is aborted for reasons that have nothing
+          // to do with the user -- the harness kills tool calls at its own budget (25 s) --
+          // and latching there ended a turn the operator never stopped (session b9bdf958:
+          // `list_apps` hit the harness budget, the abort latched STOPPED, and the next
+          // call told the model the user had pressed Escape while the operator pressed
+          // nothing).
+          this.write({ id: this.nextId++, method: 'cancel', params: {} })
         } catch {
           // sidecar may already be gone
         }
@@ -640,10 +654,11 @@ export class Sidecar {
     }
     if (method === 'call' && params && params.name === 'list_apps') {
       // The catalog build is the one request that can plausibly outrun 10 s on a cold or
-      // busy machine, and a transport timeout costs the helper (and with it the warm
-      // catalog), so a slow-but-healthy call would turn into a restart loop.
+      // busy machine. This budget is used verbatim rather than clamped to the base budget:
+      // it has to stay below the harness's 25 s tool budget (see Config.listAppsTimeoutMs)
+      // and a caller who asks for a short one means it.
       const listApps = Number(this.config.listAppsTimeoutMs)
-      return listApps > 0 ? Math.max(base, listApps) : base
+      return listApps > 0 ? listApps : 20_000
     }
     return base
   }
@@ -669,12 +684,14 @@ export class Sidecar {
       // it as a whole-request budget ("computer-use request budget exhausted").
       const timeoutMs = this.timeoutFor(method, params)
       if (method === 'tools') return this.listTools(params, signal, timeoutMs)
+      // A catalog build that outruns its budget must not cost the warm catalog.
+      const keepAlive = method === 'call' && params?.name === 'list_apps'
       const session = usesPython(method, params) ? await this.ensurePython() : this.primary
       // Turn bookkeeping lives on the Sidecar (it owns the previous turn scope), not
       // on the helper process. Calling it on `session` threw a TypeError and made
       // every Computer Use tool call fail before it ever reached the helper.
       if (method === 'call') await this.ensureTurn(params?.meta || {}, timeoutMs)
-      return session.rawRequest(method, params, signal, timeoutMs)
+      return session.rawRequest(method, params, signal, timeoutMs, undefined, keepAlive)
     }
     const task = this.chain.then(run, run)
     this.chain = task.then(() => undefined, () => undefined)

@@ -392,6 +392,46 @@ windows-apps-aliases 13 / **apps-folder 1332** / 注册表各项 1-38 ms。
 遗留：三连超时的**直接**触发因素尚未复现（本机同样调用 0.2-0.5 s）。下一次复现时
 `slow-requests.log` 会直接给出当时的方法耗时与目录阶段，不必再靠推测。
 
+## 7c. 第 17 轮：`list_apps` 真的卡了 31 秒，以及"自动退出"的真相（用户实机）
+
+> 用户会话 `b9bdf958`（19:45，重启后的新插件/helper）：`computer_use_health` 0.34 s、`skill` 立即，
+> 然后 `list_apps` 被 **harness 的 25 s 工具预算**中止（`ToolTimeoutError TOOL_TIMEOUT`），紧接着
+> `list_windows` 返回 **"Computer Use was stopped by the user with the physical Escape key"**，
+> 模型据此结束回合 —— 用户的原话是「好像自动退出了，我啥都没点」。
+
+**证据（上一轮加的慢请求日志抓到了现场）**：
+
+```json
+{"appCatalog":{"apps":751,"cacheSource":"disk-fresh","installedMs":181,"listMs":31466,"mergeMs":31285,
+ "signalsMs":171,"rebuilds":0,"rebuildStage":"idle"},"at":1789472780,"elapsedMs":31474,
+ "label":"call list_apps","processId":133216}
+```
+
+即：`list_apps` 在 helper 里跑了 **31.47 s**，其中 `mergeMs=31285` —— 目录本身只花 181 ms。
+`mergeMs` 的主体是**每个已安装应用解析一次 PE `ProductName`**（本机 751 次打开可执行文件），
+在这台机器上（Kaspersky 逐个扫描打开的文件）要 31 s，而本机热缓存下只要 324 ms。
+上一轮的"记忆化"只能救第二次调用，救不了每个新 helper 的**第一次**调用 —— 那次照样 31 s。
+
+**第二个 bug（"自动退出"的直接原因）**：harness 25 s 预算到点后会**中止工具调用**，插件的中止
+路径发的是 `interrupt` RPC，而 helper 的 `interrupt` 会 `interrupt::trip()` → `STOPPED=true` latch。
+于是**同一进程**里后续每个 CU 调用都报官方的「用户按了物理 Esc」文案，模型按契约停止整个回合。
+（`cancel_work` 的注释早就写了"RPC timeout / cancel: do not treat as physical Escape"，只是中止路径没走它。）
+
+修复与验证：
+
+- [x] **把 ProductName 解析搬到后台重建线程**：`ShellApp.product_name` 进目录缓存，`installed_display_name`
+      请求路径**永不打开可执行文件**。验证：`list_apps` 186-202 ms、`mergeMs` **38-39 ms**（旧逻辑同机 324 ms / 该机 31.5 s），
+      754 条目与显示名不变
+- [x] **`listAppsTimeoutMs` 默认 20 s（< harness 的 25 s）**，且**逐字采用**不夹到 10 s：先于 harness 超时，
+      得到的是干净的传输错误而不是"中止 → latch"
+- [x] **`keepAlive`**：`list_apps` 超时不再杀 helper。验证：1 ms 预算下请求被拒，但 `primary.alive === true`
+      且同一个 helper 仍能回答 `health`（旧行为会杀掉它并丢掉热目录）
+- [x] **中止路径改发 `cancel`**（`cancel_work`：只隐藏覆盖层），不再 latch 成"用户停止"；
+      宿主 Stop 钩子的 `interrupt()` 仍保留 latch 语义（那才是真的用户停止）
+- [x] 门禁：契约 34/34，新增「budget below the harness budget」「abort cancels instead of latching」
+      「请求路径不得再用 `prefer_product_name(&shell.display_name…)`」三条
+- [ ] 待实机复验：用户重启 DSH 后再跑一次微信任务（预期：`list_apps` 亚秒返回，药丸常驻，不再"自动退出"）
+
 ## 8. 剩余工作（不阻塞已完成的验收项）
 
 - [x] P7 自动化实机项（`parity/verify-all.ps1` 11/11 PASS）

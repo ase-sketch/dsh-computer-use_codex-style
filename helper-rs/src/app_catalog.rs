@@ -77,8 +77,21 @@ fn cached_product_name(path: &str) -> Option<String> {
     }
 }
 
+/// Display name for a window that matched no installed entry. Bounded by the number of
+/// open windows, so the file open per window is acceptable (and memoized).
 fn prefer_product_name(current: &str, path: Option<&str>) -> String {
     path.and_then(cached_product_name).unwrap_or_else(|| current.to_string())
+}
+
+/// Display name for an installed catalog entry. Deliberately I/O-free: the name was
+/// resolved during the rebuild, and resolving 751 of them inside a request is what made
+/// `list_apps` take 31 s on a machine whose antivirus scans every opened executable.
+fn installed_display_name(current: &str, stored: &str) -> String {
+    if stored.trim().is_empty() {
+        current.to_string()
+    } else {
+        stored.to_string()
+    }
 }
 
 const CACHE_FILE_NAME: &str = "shell-apps.json";
@@ -113,6 +126,15 @@ struct ShellApp {
     target_path: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     process_keys: Vec<String>,
+    /// PE `ProductName`, resolved once during the rebuild.
+    ///
+    /// `list_apps` used to resolve it per installed app on every call: 751 executable
+    /// opens here, and **31.5 s inside one request** when an antivirus scans each open
+    /// (measured 2026-09-15, `slow-requests.log`: `listMs=31466 mergeMs=31285`). The
+    /// rebuild runs on its own thread, so the cost belongs there; the request path uses
+    /// this value and never touches the filesystem.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    product_name: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -682,6 +704,7 @@ fn scan_start_menu(root: &Path, link: Option<&IShellLinkW>, persist: Option<&IPe
             identifier,
             target_path: target,
             process_keys,
+            product_name: String::new(),
         };
         if let Some(app) = finish_app(app) {
             upsert(out, index, app);
@@ -710,6 +733,7 @@ fn scan_windows_apps(root: &Path, out: &mut Vec<ShellApp>, index: &mut HashMap<S
             identifier,
             target_path: Some(target),
             process_keys,
+            product_name: String::new(),
         };
         if let Some(app) = finish_app(app) {
             upsert(out, index, app);
@@ -792,6 +816,7 @@ fn scan_apps_folder(out: &mut Vec<ShellApp>, index: &mut HashMap<String, usize>)
             identifier,
             target_path: None,
             process_keys,
+            product_name: String::new(),
         };
         if let Some(app) = finish_app(app) {
             upsert(out, index, app);
@@ -895,6 +920,7 @@ fn scan_app_paths(root: HKEY, sub: &str, out: &mut Vec<ShellApp>, index: &mut Ha
             identifier,
             target_path: target,
             process_keys,
+            product_name: String::new(),
         };
         if let Some(app) = finish_app(app) {
             upsert(out, index, app);
@@ -932,6 +958,7 @@ fn scan_uninstall(root: HKEY, sub: &str, out: &mut Vec<ShellApp>, index: &mut Ha
             identifier,
             target_path: target,
             process_keys,
+            product_name: String::new(),
         };
         if let Some(app) = finish_app(app) {
             upsert(out, index, app);
@@ -965,6 +992,7 @@ fn scan_appx_applications(root: HKEY, sub: &str, out: &mut Vec<ShellApp>, index:
             identifier: name,
             target_path: None,
             process_keys,
+            product_name: String::new(),
         };
         if let Some(app) = finish_app(app) {
             upsert(out, index, app);
@@ -1015,6 +1043,7 @@ fn scan_appx_packages(out: &mut Vec<ShellApp>, index: &mut HashMap<String, usize
                 identifier: aumid,
                 target_path: None,
                 process_keys,
+                product_name: String::new(),
             };
             if let Some(app) = finish_app(app) {
                 upsert(out, index, app);
@@ -1074,6 +1103,16 @@ fn rebuild_installed() -> Vec<ShellApp> {
     scan_appx_packages(&mut apps, &mut index);
     note_rebuild_stage("appx-applications");
     scan_appx_applications(HKEY_LOCAL_MACHINE, HKLM_APPX, &mut apps, &mut index);
+    // Resolve PE product names here, on the background thread. Doing it in the request
+    // path is what turned one `list_apps` into 31.5 s of executable opens.
+    note_rebuild_stage("product-names");
+    for app in apps.iter_mut() {
+        if app.product_name.is_empty() {
+            if let Some(path) = app.target_path.as_deref() {
+                app.product_name = product_name(path).unwrap_or_default();
+            }
+        }
+    }
     note_rebuild_stage("done");
     apps
 }
@@ -1255,7 +1294,7 @@ fn list_apps_merge(installed: Vec<ShellApp>, windows: &[WindowRef]) -> Vec<AppIn
         }
         apps.push(AppInfo {
             id: shell.identifier.clone(),
-            display_name: prefer_product_name(&shell.display_name, shell.target_path.as_deref()),
+            display_name: installed_display_name(&shell.display_name, &shell.product_name),
             is_running: false,
             windows: Vec::new(),
             use_count: None,
@@ -2133,6 +2172,7 @@ mod tests {
             identifier: "Contoso.CatalogItem".into(),
             target_path: None,
             process_keys: vec![],
+            product_name: String::new(),
         };
         let plan = plan_from_shell("Contoso App", &shell).unwrap();
         assert_eq!(plan.kind, LaunchKind::AppsFolder("Contoso.CatalogItem".into()));
@@ -2152,6 +2192,7 @@ mod tests {
             identifier: "Missing".into(),
             target_path: Some(r"C:\definitely-not-installed\app.exe".into()),
             process_keys: vec![],
+            product_name: String::new(),
         };
         let err = plan_from_shell("Missing", &shell).unwrap_err();
         assert_eq!(err.message, RESOLVED_EXE_PATH);
@@ -2164,6 +2205,7 @@ mod tests {
             identifier: "MissingTargetApp".into(),
             target_path: Some(r"C:\definitely-not-installed\missing-app.exe".into()),
             process_keys: vec![],
+            product_name: String::new(),
         };
         let err = plan_from_shell("Missing Target", &shell).unwrap_err();
         assert_eq!(err.message, RESOLVED_EXE_PATH);
@@ -2180,6 +2222,7 @@ mod tests {
             identifier: "ContosoApp".into(),
             target_path: None,
             process_keys: vec![],
+            product_name: String::new(),
         };
         let plan = plan_from_shell("Contoso", &shell).expect("appsfolder launch plan");
         assert_eq!(plan.kind, LaunchKind::AppsFolder("ContosoApp".into()));
@@ -2194,6 +2237,7 @@ mod tests {
             identifier: String::new(),
             target_path: None,
             process_keys: vec![],
+            product_name: String::new(),
         };
         let err = plan_from_shell("Contoso", &shell).unwrap_err();
         assert_eq!(err.message, "app catalog entry has no canonical ID");
@@ -2206,6 +2250,7 @@ mod tests {
             identifier: "Microsoft.Paint_8wekyb3d8bbwe!App".into(),
             target_path: None,
             process_keys: vec![],
+            product_name: String::new(),
         };
         let plan = plan_from_shell("mspaint", &shell).expect("aumid catalog");
         assert_eq!(

@@ -695,24 +695,56 @@ test('overlay capture exclusion: on-screen-safe by default and wired to the help
   assert.match(sidecar, /overlayCaptureExclusion/)
 })
 
-test('list_apps gets a catalog-sized transport budget (DSH extension)', () => {
+test('list_apps gets a catalog-sized transport budget below the harness budget', () => {
   // The official transport budgets every request 10 s and kills the helper when it
-  // expires. That is the wrong default for the one method that builds the installed-app
-  // catalog: the kill throws the warm catalog away, so a slow-but-healthy call becomes
-  // three timeouts and a dead turn.
+  // expires. Two things follow for the one method that builds the installed-app catalog:
+  // the budget must be larger than 10 s (a kill throws the warm catalog away), and it must
+  // stay below DSH's own 25 s tool-call budget (an abort is heavier than a timeout -- it
+  // used to latch the turn as "stopped by the user with the physical Escape key", which
+  // ended turns the operator never stopped).
+  const HARNESS_TOOL_BUDGET_MS = 25000
   const host = HostConfig({})
-  assert.equal(host.listAppsTimeoutMs, 30000)
+  assert.equal(host.listAppsTimeoutMs, 20000)
+  assert.ok(host.listAppsTimeoutMs > host.timeoutMs, 'above the official 10 s transport budget')
+  assert.ok(host.listAppsTimeoutMs < HARNESS_TOOL_BUDGET_MS, 'below the harness tool budget')
   const sidecar = new Sidecar(host)
-  assert.equal(sidecar.timeoutFor('call', { name: 'list_apps' }), 30000)
+  assert.equal(sidecar.timeoutFor('call', { name: 'list_apps' }), 20000)
+  assert.equal(sidecar.timeoutFor('call', { name: 'list_apps' }), host.listAppsTimeoutMs)
+  assert.equal(new Sidecar(HostConfig({ listAppsTimeoutMs: 5000 })).timeoutFor('call', { name: 'list_apps' }), 5000, 'used verbatim')
   assert.equal(sidecar.timeoutFor('call', { name: 'launch_app' }), host.launchAppTimeoutMs)
   assert.equal(sidecar.timeoutFor('call', { name: 'click' }), 10000, 'every other call keeps the official budget')
   assert.equal(sidecar.timeoutFor('health'), 10000)
   assert.equal(new Sidecar(HostConfig({ listAppsTimeoutMs: 90000 })).timeoutFor('call', { name: 'list_apps' }), 90000)
+  // A catalog build that outruns its budget must not cost the warm catalog: the sidecar
+  // keeps the helper alive for this one method.
+  const sidecarSource = source('sidecar.js')
+  assert.match(sidecarSource, /keepAlive/)
   // The helper-side evidence path must exist too: the transport kills the helper on a
   // timeout, so the only surviving record of a slow request is the helper's own log.
   const helperSource = fs.readFileSync(path.join(pluginRoot, 'helper-rs', 'src', 'main.rs'), 'utf8')
   assert.match(helperSource, /slow-requests\.log/)
   assert.match(helperSource, /note_slow_request/)
+  // And the request path must not resolve 751 product names: that is what made one
+  // list_apps take 31.5 s inside a request (slow-requests.log, 2026-09-15).
+  const catalogSource = fs.readFileSync(path.join(pluginRoot, 'helper-rs', 'src', 'app_catalog.rs'), 'utf8')
+  assert.match(catalogSource, /fn installed_display_name/)
+  assert.match(catalogSource, /installed_display_name\(&shell\.display_name, &shell\.product_name\)/)
+  assert.doesNotMatch(catalogSource, /prefer_product_name\(&shell\.display_name/)
+})
+
+test('an aborted tool call cancels the action instead of latching the turn as user-stopped', () => {
+  // The harness aborts a tool call when its own 25 s budget expires. The abort path used
+  // to send the `interrupt` RPC, which latches the helper as stopped; every later call in
+  // that process then reported "Computer Use was stopped by the user with the physical
+  // Escape key" and the model ended the turn (session b9bdf958, operator pressed nothing).
+  const sidecarSource = source('sidecar.js')
+  const abortBlock = /const onAbort = \(\) => \{([\s\S]*?)\n      \}/.exec(sidecarSource)
+  assert.ok(abortBlock, 'the abort handler must be findable')
+  assert.match(abortBlock[1], /method: 'cancel'/)
+  assert.doesNotMatch(abortBlock[1], /method: 'interrupt'/)
+  // The host-driven Stop hook keeps the latching RPC: that one really is the user stopping.
+  const indexSource = source('index.js')
+  assert.match(indexSource, /return this\.sidecar\.request\('interrupt'\)/)
 })
 
 test('D-E maxImageEdge defaults to the official no-cap behaviour and stays labelled', () => {
