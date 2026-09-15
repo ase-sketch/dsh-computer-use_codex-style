@@ -306,7 +306,7 @@ function healthTool(ctx, state, config, startError) {
         return [{ type: 'text', text: JSON.stringify(value, null, 2) }]
       },
     },
-    async execute() {
+    async execute(_args, exec) {
       const catalogue = {
         browserUnlocked: Boolean(state.browserUnlocked),
         browserSkill: BROWSER_SKILL,
@@ -315,6 +315,9 @@ function healthTool(ctx, state, config, startError) {
           default: config.approvalDefault,
           tools: config.approvalTools,
           recorded: state.recordedApprovals.slice(0, 32),
+          // What this session will actually do with a helper refusal: full access and a
+          // 'never' policy both grant it without an ask (see approvalFacts).
+          session: approvalFacts(exec, ctx.get('approval')),
         },
         documentation: documentationSummary(),
         promptAssets: promptAssetStatus(),
@@ -656,9 +659,57 @@ export function normalizeApprovalRequest(raw) {
 }
 
 /**
+ * The session's permission facts for the app-approval path.
+ *
+ * The harness derives two independent knobs from the user's permission preset and
+ * writes both into the session log: `sandbox/mode` and `approval/policy`. The shipped
+ * base bundle maps full access to `danger-full-access` + `never`, and `never` means
+ * "never prompt anyone": ApprovalService.request() resolves "rejected" deterministically
+ * *before* any answerer sees the ask (user-approval/src/index.ts decide()). Asking
+ * anyway therefore does not merely skip a click, it makes launch_app, activate_window
+ * and audio recording unusable for the whole session -- which is exactly the bug this
+ * reads the log for. Full access is the user saying "do not ask me", so the app gate is
+ * granted instead of asked, and the grant is recorded for the audit trail.
+ *
+ * @param {object} exec tool execution context; `agent.session` carries the log
+ * @param {object} [approval] the approval service, for its configured default policy
+ * @returns {{ sandbox: string|undefined, policy: string, fullAccess: boolean, neverAsk: boolean }}
+ */
+export function approvalFacts(exec, approval) {
+  const session = exec && exec.agent ? exec.agent.session : undefined
+  let sandbox
+  let policy
+  if (session && typeof session.seq === 'number' && typeof session.eventAt === 'function') {
+    for (let seq = session.seq - 1; seq >= 0 && (sandbox === undefined || policy === undefined); seq -= 1) {
+      let event
+      try {
+        event = session.eventAt(seq)
+      } catch {
+        break
+      }
+      if (!event) continue
+      if (sandbox === undefined && event.type === 'sandbox/mode') sandbox = event.data && event.data.mode
+      if (policy === undefined && event.type === 'approval/policy') policy = event.data && event.data.policy
+    }
+  }
+  const configured = approval && approval.config && typeof approval.config.policy === 'string'
+    ? approval.config.policy
+    : undefined
+  const effective = typeof policy === 'string' && policy !== '' ? policy : (configured || 'ask')
+  return {
+    sandbox,
+    policy: effective,
+    fullAccess: sandbox === 'danger-full-access',
+    neverAsk: effective === 'never',
+  }
+}
+
+/**
  * Decide a helper refusal. Official transport elicits **after** the refusal and
  * retries with `x-oai-cua-approved-app`; the plugin must never synthesise that
- * header on its own (APS-01).
+ * header on its own (APS-01). A session the user put into full access (or one whose
+ * approval policy never prompts) has already answered the question, so its refusal is
+ * granted without an ask; an explicit `deny` still fails closed.
  *
  * @returns {Promise<object>} the (possibly retried) helper result
  */
@@ -674,6 +725,19 @@ async function resolveRefusal(ctx, config, state, spec, exec, input, turnMeta, r
     return retryWithApproval(ctx, spec, exec, input, turnMeta, app)
   }
   const service = ctx.get('approval')
+  const facts = approvalFacts(exec, service)
+  if (facts.fullAccess || facts.neverAsk) {
+    // The user already answered the question by choosing this permission preset, and a
+    // 'never' policy cannot be answered at all (the service auto-rejects before any
+    // answerer). Grant the app for this call and keep the audit trail honest.
+    state.recordedApprovals.push({
+      toolName: spec.name,
+      app,
+      mode: 'allow',
+      outcome: facts.fullAccess ? 'full-access' : 'approval-policy-never',
+    })
+    return retryWithApproval(ctx, spec, exec, input, turnMeta, app)
+  }
   if (service === undefined || exec.agent === undefined) {
     // No answerer: fail closed exactly like the official unavailable path.
     throw new Error(notApprovedMessage(displayName))

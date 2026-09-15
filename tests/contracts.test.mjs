@@ -24,6 +24,7 @@ import {
   documentWasRead,
   deriveAudioResult,
   computerUseSectionOrder,
+  approvalFacts,
 } from '../src/tool.js'
 import {
   computerUsePrompt,
@@ -216,6 +217,130 @@ test('APS-01 an approved refusal retries once with the official header and elici
   assert.match(seen.reason, /Allow Computer Use to use Notepad/)
   const retries = harness.calls.filter(c => c.meta && c.meta['x-oai-cua-approved-app'] === 'notepad.exe')
   assert.equal(retries.length, 1)
+})
+
+test('C8 approvalFacts folds the session permission log', () => {
+  const session = events => ({ seq: events.length, eventAt: seq => events[seq] })
+  const full = session([
+    { type: 'sandbox/mode', data: { mode: 'danger-full-access' } },
+    { type: 'approval/policy', data: { policy: 'never' } },
+  ])
+  assert.deepEqual(approvalFacts({ agent: { session: full } }), {
+    sandbox: 'danger-full-access',
+    policy: 'never',
+    fullAccess: true,
+    neverAsk: true,
+  })
+  const interactive = session([
+    { type: 'sandbox/mode', data: { mode: 'workspace-write' } },
+    { type: 'approval/policy', data: { policy: 'ask' } },
+  ])
+  assert.deepEqual(approvalFacts({ agent: { session: interactive } }), {
+    sandbox: 'workspace-write',
+    policy: 'ask',
+    fullAccess: false,
+    neverAsk: false,
+  })
+  // Only the LAST value of each knob counts (the log is a fold, not a set).
+  const flipped = session([
+    { type: 'approval/policy', data: { policy: 'never' } },
+    { type: 'approval/policy', data: { policy: 'ask' } },
+  ])
+  assert.equal(approvalFacts({ agent: { session: flipped } }).neverAsk, false)
+  // Without a session log the approval service's configured default decides.
+  assert.equal(approvalFacts({ agent: { id: 's' } }, { config: { policy: 'never' } }).neverAsk, true)
+  assert.equal(approvalFacts(undefined, undefined).policy, 'ask', 'the fail-safe default stays interactive')
+})
+
+test('APS-11 a full-access session grants the app refusal without asking', async () => {
+  let asked = 0
+  const session = {
+    seq: 2,
+    eventAt: seq => [
+      { type: 'sandbox/mode', data: { mode: 'danger-full-access' } },
+      { type: 'approval/policy', data: { policy: 'never' } },
+    ][seq],
+  }
+  const harness = makeHarness({
+    approval: { request: async () => { asked += 1; return 'allowed-once' } },
+    onCall: (name, args, meta, count) => (count === 1
+      ? { ok: false, error: 'AppApprovalRequired', approvalRequest: { app: 'notepad.exe', displayName: 'Notepad', allowPersistentApproval: true } }
+      : { ok: true, value: { done: true } }),
+  })
+  await applyTools(harness.ctx, ToolConfig({}))
+  const exec = { agent: { id: 's', session }, arguments: { app: 'notepad.exe' } }
+  const result = await harness.registered.get('launch_app').execute({ app: 'notepad.exe' }, exec)
+  assert.equal(result.value.done, true, 'the session-level grant admits the retry')
+  assert.equal(asked, 0, 'full access must not ask the user')
+  assert.equal(
+    harness.calls.filter(c => c.meta && c.meta['x-oai-cua-approved-app'] === 'notepad.exe').length,
+    1,
+    'the retry still carries the official approved-app header',
+  )
+  const health = await harness.registered.get('computer_use_health').execute({}, exec)
+  assert.equal(health.approval.session.fullAccess, true)
+  assert.deepEqual(health.approval.recorded[0], {
+    toolName: 'launch_app',
+    app: 'notepad.exe',
+    mode: 'allow',
+    outcome: 'full-access',
+  })
+})
+
+test('APS-11 a never-prompt policy grants the refusal, while an explicit deny still fails closed', async () => {
+  let asked = 0
+  const session = {
+    seq: 1,
+    eventAt: seq => [{ type: 'approval/policy', data: { policy: 'never' } }][seq],
+  }
+  const harness = makeHarness({
+    approval: { request: async () => { asked += 1; return 'allowed-once' } },
+    onCall: (name, args, meta, count) => (count === 1
+      ? { ok: false, error: 'AppApprovalRequired', approvalRequest: { app: 'notepad.exe', displayName: 'Notepad' } }
+      : { ok: true, value: { done: true } }),
+  })
+  await applyTools(harness.ctx, ToolConfig({}))
+  const exec = { agent: { id: 's', session }, arguments: { app: 'notepad.exe' } }
+  const result = await harness.registered.get('launch_app').execute({ app: 'notepad.exe' }, exec)
+  assert.equal(result.value.done, true)
+  assert.equal(asked, 0, 'a never-prompt session cannot be asked at all')
+  const health = await harness.registered.get('computer_use_health').execute({}, exec)
+  assert.equal(health.approval.recorded[0].outcome, 'approval-policy-never')
+
+  // The explicit per-tool deny is configuration, not a session default: it still fails closed.
+  const denied = makeHarness({
+    approval: { request: async () => 'allowed-once' },
+    onCall: () => ({ ok: false, error: 'AppApprovalRequired', approvalRequest: { app: 'notepad.exe', displayName: 'Notepad' } }),
+  })
+  await applyTools(denied.ctx, ToolConfig({ approvalTools: { launch_app: 'deny' } }))
+  await assert.rejects(
+    () => denied.registered.get('launch_app').execute({ app: 'notepad.exe' }, exec),
+    /not approved to use Notepad/,
+  )
+})
+
+test('APS-11 an interactive session still asks exactly once', async () => {
+  let asked = 0
+  const session = {
+    seq: 2,
+    eventAt: seq => [
+      { type: 'sandbox/mode', data: { mode: 'workspace-write' } },
+      { type: 'approval/policy', data: { policy: 'ask' } },
+    ][seq],
+  }
+  const harness = makeHarness({
+    approval: { request: async () => { asked += 1; return 'allowed-once' } },
+    onCall: (name, args, meta, count) => (count === 1
+      ? { ok: false, error: 'AppApprovalRequired', approvalRequest: { app: 'notepad.exe', displayName: 'Notepad' } }
+      : { ok: true, value: { done: true } }),
+  })
+  await applyTools(harness.ctx, ToolConfig({}))
+  const result = await harness.registered.get('launch_app').execute(
+    { app: 'notepad.exe' },
+    { agent: { id: 's', session }, arguments: { app: 'notepad.exe' } },
+  )
+  assert.equal(result.value.done, true)
+  assert.equal(asked, 1, 'a normal session must still ask the user once')
 })
 
 test('PSG-5 requiredFor documentation gate blocks CDP until the reference is read', async () => {

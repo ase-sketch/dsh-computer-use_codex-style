@@ -158,7 +158,7 @@ flowchart TB
 
 **Freshness is identity-based, not time-based.** There is no TTL: an observation stays valid while the window identity, its bounds and the human-input monitor agree. The moment a person touches the observed window, the next input is refused with `user input was detected in this window; call get_window_state before continuing`.
 
-**Nothing is silently approved.** `launch_app` and audio recording pause for the harness approval UI, approval is per app, and a refusal is reported with the official wording instead of being retried.
+**Nothing is silently approved.** `launch_app` and audio recording pause for the harness approval UI, approval is per app, and a refusal is reported with the official wording instead of being retried. The one exception is a permission preset that has already answered the question: a full-access session (or a session whose approval policy never prompts) grants the app gate without asking, and `computer_use_health` records the reason.
 
 ---
 
@@ -311,7 +311,7 @@ The note travels as its own block, so the official payload keeps its exact key s
 |---|---|---|
 | `surfaces` | `[computer]` | Which catalogs to expose (`computer`, `browser`, `mac`, `all`) |
 | `browserSkill` | `computer-use-browser` | Skill that unlocks the browser catalog |
-| `approvalDefault` | `prompt` | What to do when the helper refuses for approval: `prompt`, `allow`, `deny` |
+| `approvalDefault` | `prompt` | What to do when the helper refuses for approval: `prompt`, `allow`, `deny`. A full-access session (or a session whose approval policy never prompts) is granted without asking, and an explicit `deny` still fails closed |
 | `approvalTools` | `{}` | Per-tool override of the above |
 | `enabledTools` | `[batch_actions]` | Which harness extensions enter the model-facing catalog |
 

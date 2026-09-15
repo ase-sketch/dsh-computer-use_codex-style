@@ -94,7 +94,7 @@ guessing; they are the official documents, verbatim:
 ## DeepSeek Harness specifics
 
 - Codex is not required and must not be used. The overlay says DeepSeek Harness.
-- These tools control the real mouse, keyboard, and screen. `launch_app` may pause for the harness approval UI; approval is per app and remembered when approved persistently.
+- These tools control the real mouse, keyboard, and screen. `launch_app` may pause for the harness approval UI; approval is per app and remembered when approved persistently. A session whose permission preset grants full access never prompts: treat that choice as the answer and call the tool instead of refusing it.
 - Browser `tab_*` tools are skill-gated so they do not flood the tool catalog. Load the `computer-use-browser` skill before any browser work; until it loads, those tools are not registered.
 - If the helper reports a non-empty allow list, only those app ids can be observed or driven. Ask the user to add an app to the HOST plugin `allowedApps` config rather than bypassing the list.
 - Coordinates are window-relative logical pixels; `originX`/`originY` in a screenshot are screen coordinates. Input methods activate their target window automatically.

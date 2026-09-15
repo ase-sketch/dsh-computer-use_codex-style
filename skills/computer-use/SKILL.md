@@ -152,7 +152,8 @@ When the first observation of an app matches a stored note, that tool result car
 ## Approvals
 
 `launch_app` and audio recording may pause for the harness approval UI. Approval is per app and is remembered
-when approved persistently. If the helper reports a non-empty allow list, only those app ids can be observed
+when approved persistently. In a session whose permission preset grants full access (or whose approval policy
+never prompts) the app gate is granted without asking: call the tool instead of refusing it. If the helper reports a non-empty allow list, only those app ids can be observed
 or driven; ask the user to add an app to the HOST plugin `allowedApps` config rather than bypassing it.
 
 ## Browser

@@ -158,7 +158,7 @@ flowchart TB
 
 **新鲜度靠身份，不靠时间。** 没有 TTL：窗口身份、包围盒与人机输入监视器一致时观察才有效。只要有人碰了被观察的窗口，下一次输入就会以 `user input was detected in this window; call get_window_state before continuing` 被拒绝。
 
-**没有任何动作会被静默批准。** `launch_app` 与音频录制会暂停等待 harness 批准 UI，批准按应用记忆，被拒绝时按官方文案报错而不是重试。
+**没有任何动作会被静默批准。** `launch_app` 与音频录制会暂停等待 harness 批准 UI，批准按应用记忆，被拒绝时按官方文案报错而不是重试。唯一的例外是**权限预设已经替你回答了问题**：完全访问会话（或批准策略为「从不询问」的会话）会直接放行应用门禁，`computer_use_health` 里会记录原因。
 
 ---
 
@@ -311,7 +311,7 @@ invalidate them, and the current observation always wins over a stored note.
 |---|---|---|
 | `surfaces` | `[computer]` | 暴露哪些目录（`computer`、`browser`、`mac`、`all`） |
 | `browserSkill` | `computer-use-browser` | 解锁浏览器目录的技能名 |
-| `approvalDefault` | `prompt` | helper 因批准而拒绝时的行为：`prompt`、`allow`、`deny` |
+| `approvalDefault` | `prompt` | helper 因批准而拒绝时的行为：`prompt`、`allow`、`deny`。完全访问会话（或批准策略为「从不询问」的会话）直接放行且不询问；显式 `deny` 仍然失败关闭 |
 | `approvalTools` | `{}` | 按工具覆盖上面的策略 |
 | `enabledTools` | `[batch_actions]` | 哪些 harness 扩展进入模型可见目录 |
 
@@ -423,7 +423,7 @@ docs/                   插件说明与图片资源
 ## 安全与隐私
 
 - **Agent 控制的是真实的鼠标、键盘与屏幕。** 请只在你能接受这一点的会话里使用 Computer Use，并保持拒绝清单完整。
-- **批准是显式的。** `launch_app` 与音频录制会暂停等待 harness 批准 UI；没有任何动作会被静默批准，被拒绝的请求也绝不重试。
+- **批准是显式的。** `launch_app` 与音频录制会暂停等待 harness 批准 UI；没有任何动作会被静默批准，被拒绝的请求也绝不重试。完全访问（或批准策略为「从不询问」）的会话除外：那是用户自己的选择，插件按 `allow` 放行并留下审计记录。
 - **经验层是本机且有界的。** 它位于插件目录内、已 gitignore、永不打包，也永不记录输入文本、控件名或截图字节。
 - **截图是视觉 part。** 它们以图片附件形式送达模型，JSON 工具结果里不含 base64。
 - **不可信内容始终不可信。** 网页、文档与邮件可以给模型提供信息，但无权授权任何动作。
