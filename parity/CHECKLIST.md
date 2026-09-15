@@ -352,6 +352,46 @@ node <repo>\parity\smoke-axdiff.mjs
 # 6) launch_app 审批：批准 / 拒绝两条路径文案正确
 ```
 
+## 7b. 第 16 轮：`list_apps` 传输超时（用户实机报告）
+
+> 用户会话 `3e827c8a`（19:27，已重启的新插件 + 新 helper，health 里 `overlay.captureExclusion=mask`）：
+> 3 次 `list_apps` 全部在 **10.02 / 10.07 / 10.07 s** 被传输层判超时，而 `computer_use_health` 0.57 s、
+> `list_windows` **0.16 s**、`computer_use_experience` 0.01 s 全部正常 —— helper 活着、读得到 stdin，
+> 只有 `list_apps` 不作为。超时按官方语义会**杀掉 helper**，所以三连超时同时丢掉了热目录缓存。
+> （另外那次会话里 overlay 线程从未启动过：`commands: []`、`pumpIters: 0`，药丸的遮蔽/重建代码根本没参与。）
+
+本机复现（同一台机器、同一条插件路径 `Sidecar`，冷/热缓存都测）：
+
+| 场景 | `list_apps` 墙钟 | 目录来源 | `signalsMs` | `mergeMs` |
+|---|---|---|---|---|
+| 磁盘缓存可用（新进程首次） | 461 ms | disk-fresh | 135 | **324** |
+| 同进程再次调用 | 166-184 ms | memory-fresh | 129-137 | **36** |
+| 完全无缓存 | 202-547 ms（目录空，只返回 8 个窗口条目） | none | 118-145 | 30-419 |
+| 后台重建（不阻塞作答） | **3.73 s** | — | — | — |
+
+重建阶段耗时：shortcut-pair 3 / start-menu-user 634 / start-menu-machine 1636 /
+windows-apps-aliases 13 / **apps-folder 1332** / 注册表各项 1-38 ms。
+
+定位：`mergeMs` 几乎全部花在**每个已安装应用解析一次 PE ProductName**
+（`prefer_product_name` → `policy::product_name`，本机 751 个应用 = 751 次打开可执行文件），
+而它每次观察都会重做。文件系统忙、或杀毒软件逐个扫描被打开的文件（本机装了 Kaspersky）时，
+这一步会被拉长到数秒以上 —— 与「只有 `list_apps` 超时、`list_windows` 0.16 s」的形态吻合。
+
+- [x] **ProductName 进程内记忆化**（`PRODUCT_NAMES`，目录重建完成时失效）：`mergeMs` 324 ms → **36 ms**，
+      每次调用不再打开 751 个可执行文件
+- [x] **`listAppsTimeoutMs`（DSH 扩展，默认 30 s）**：目录是唯一「作答前要干活」的方法；为一个慢但健康的
+      目录杀掉 helper，只会让下一次尝试也变冷。其余方法仍是官方 10 s（`launch_app` 15 s）
+- [x] **慢请求日志** `%LOCALAPPDATA%\computer-use-app-catalog\slow-requests.log`：记录超过
+      `DSH_CU_SLOW_REQUEST_MS`（默认 1 s，0 = 全记）的每个请求 —— 方法、耗时、`appCatalog` 计时与重建阶段。
+      传输超时会把 helper 连同进程内诊断一起杀掉，这份文件是唯一能活下来的证据
+- [x] `appCatalog` 诊断（`cacheSource/installedMs/signalsMs/mergeMs/rebuildMs/rebuilds/rebuildStage(s)`）
+      进 `diagnostic_state`，并随 `computer_use_health` 的 `overlay` 合并一起可见
+- [x] 门禁 `tests/contracts.test.mjs`「list_apps gets a catalog-sized transport budget」：
+      默认 30 s、`launch_app` 仍 15 s、其余仍 10 s、helper 侧日志代码必须存在
+
+遗留：三连超时的**直接**触发因素尚未复现（本机同样调用 0.2-0.5 s）。下一次复现时
+`slow-requests.log` 会直接给出当时的方法耗时与目录阶段，不必再靠推测。
+
 ## 8. 剩余工作（不阻塞已完成的验收项）
 
 - [x] P7 自动化实机项（`parity/verify-all.ps1` 11/11 PASS）

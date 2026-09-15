@@ -110,6 +110,15 @@ export const Config = Schema.object({
   /** Official transport uses 15 s for launch_app. */
   launchAppTimeoutMs: Schema.number().default(15000),
   /**
+   * DSH extension: budget for `list_apps`, the one method that builds the installed-app
+   * catalog before it can answer. The official transport gives every request 10 s and
+   * *kills* the helper when that expires -- which throws the warm catalog away and makes
+   * the next attempt cold again, so a slow-but-healthy catalog becomes three timeouts and
+   * a dead turn. Measured 0.2-0.6 s warm on this machine; the first build on a busy
+   * machine (filesystem, antivirus) is the case this budget exists for.
+   */
+  listAppsTimeoutMs: Schema.number().default(30000),
+  /**
    * Helper startup budget in ms. Official `.mcp.json` uses
    * `startup_timeout_sec: 120`; a helper that never becomes ready must reject
    * rather than hang the session (MCP-05).
@@ -182,6 +191,7 @@ export default class ComputerUseService extends Service {
       approveLaunch: true,
       timeoutMs: 10000,
       launchAppTimeoutMs: 15000,
+      listAppsTimeoutMs: 30000,
       startupTimeoutMs: 15000,
       envAllowlist: [],
       preserveHelperOnTimeout: false,

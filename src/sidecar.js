@@ -638,6 +638,13 @@ export class Sidecar {
       const launch = Number(this.config.launchAppTimeoutMs)
       return launch > 0 ? launch : 15_000
     }
+    if (method === 'call' && params && params.name === 'list_apps') {
+      // The catalog build is the one request that can plausibly outrun 10 s on a cold or
+      // busy machine, and a transport timeout costs the helper (and with it the warm
+      // catalog), so a slow-but-healthy call would turn into a restart loop.
+      const listApps = Number(this.config.listAppsTimeoutMs)
+      return listApps > 0 ? Math.max(base, listApps) : base
+    }
     return base
   }
 

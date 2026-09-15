@@ -35,7 +35,7 @@ import {
   browserReferenceStatus,
   BROWSER_REFERENCE_FILES,
 } from '../src/prompt.js'
-import { sanitizedEnvironment, waitSpawn, BASE_ENV_ALLOWLIST } from '../src/sidecar.js'
+import { sanitizedEnvironment, waitSpawn, BASE_ENV_ALLOWLIST, Sidecar } from '../src/sidecar.js'
 
 // The bundle root IS the repository root (official layout: `package.json` +
 // `cordis.patch.yml` + entry modules at the package root, with the Rust helper and the
@@ -693,6 +693,26 @@ test('overlay capture exclusion: on-screen-safe by default and wired to the help
   assert.match(sidecar, /DSH_CU_OVERLAY_CAPTURE_EXCLUSION/)
   assert.match(overlay, /DSH_CU_OVERLAY_CAPTURE_EXCLUSION/)
   assert.match(sidecar, /overlayCaptureExclusion/)
+})
+
+test('list_apps gets a catalog-sized transport budget (DSH extension)', () => {
+  // The official transport budgets every request 10 s and kills the helper when it
+  // expires. That is the wrong default for the one method that builds the installed-app
+  // catalog: the kill throws the warm catalog away, so a slow-but-healthy call becomes
+  // three timeouts and a dead turn.
+  const host = HostConfig({})
+  assert.equal(host.listAppsTimeoutMs, 30000)
+  const sidecar = new Sidecar(host)
+  assert.equal(sidecar.timeoutFor('call', { name: 'list_apps' }), 30000)
+  assert.equal(sidecar.timeoutFor('call', { name: 'launch_app' }), host.launchAppTimeoutMs)
+  assert.equal(sidecar.timeoutFor('call', { name: 'click' }), 10000, 'every other call keeps the official budget')
+  assert.equal(sidecar.timeoutFor('health'), 10000)
+  assert.equal(new Sidecar(HostConfig({ listAppsTimeoutMs: 90000 })).timeoutFor('call', { name: 'list_apps' }), 90000)
+  // The helper-side evidence path must exist too: the transport kills the helper on a
+  // timeout, so the only surviving record of a slow request is the helper's own log.
+  const helperSource = fs.readFileSync(path.join(pluginRoot, 'helper-rs', 'src', 'main.rs'), 'utf8')
+  assert.match(helperSource, /slow-requests\.log/)
+  assert.match(helperSource, /note_slow_request/)
 })
 
 test('D-E maxImageEdge defaults to the official no-cap behaviour and stays labelled', () => {

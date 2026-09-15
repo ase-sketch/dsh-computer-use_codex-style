@@ -9,7 +9,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -54,8 +54,31 @@ pub fn product_name(path: &str) -> Option<String> {
     policy::product_name(path)
 }
 
+/// Resolved PE product names, keyed by executable path.
+///
+/// `list_apps` resolves one per installed app -- 751 on this machine -- and every
+/// resolution opens the executable. On a machine with a busy filesystem or an antivirus
+/// that scans each open that is the expensive part of the call, and it ran again on every
+/// observation. Cleared whenever the catalog is rebuilt.
+static PRODUCT_NAMES: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+fn cached_product_name(path: &str) -> Option<String> {
+    let mut guard = PRODUCT_NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    let map = guard.get_or_insert_with(HashMap::new);
+    if let Some(hit) = map.get(path) {
+        return if hit.is_empty() { None } else { Some(hit.clone()) };
+    }
+    let name = product_name(path).unwrap_or_default();
+    map.insert(path.to_string(), name.clone());
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
 fn prefer_product_name(current: &str, path: Option<&str>) -> String {
-    path.and_then(product_name).unwrap_or_else(|| current.to_string())
+    path.and_then(cached_product_name).unwrap_or_else(|| current.to_string())
 }
 
 const CACHE_FILE_NAME: &str = "shell-apps.json";
@@ -127,6 +150,91 @@ fn catalog_cell() -> &'static Mutex<Option<CachedCatalog>> {
     CELL.get_or_init(|| Mutex::new(None))
 }
 
+/// Where the time in `list_apps` goes. The catalog is the one Computer Use method that can
+/// run for seconds on a cold machine, and the transport kills the helper when a request
+/// exceeds its budget -- which throws the warm cache away and makes the next attempt cold
+/// again. These counters are what tell "slow but working" apart from "wedged" without a
+/// debugger, so the budget can be fixed in the right place.
+static SIGNALS_MS: AtomicU64 = AtomicU64::new(0);
+static SIGNALS_COUNT: AtomicU64 = AtomicU64::new(0);
+static INSTALLED_MS: AtomicU64 = AtomicU64::new(0);
+static REBUILD_MS: AtomicU64 = AtomicU64::new(0);
+static REBUILDS: AtomicU64 = AtomicU64::new(0);
+static CATALOG_APPS: AtomicU64 = AtomicU64::new(0);
+static LIST_MS: AtomicU64 = AtomicU64::new(0);
+static MERGE_MS: AtomicU64 = AtomicU64::new(0);
+static CACHE_SOURCE: Mutex<&'static str> = Mutex::new("none");
+
+fn note_cache_source(source: &'static str) {
+    if let Ok(mut slot) = CACHE_SOURCE.lock() {
+        *slot = source;
+    }
+}
+
+fn ms_since(start: Instant) -> u64 {
+    start.elapsed().as_millis() as u64
+}
+
+/// Where the background catalog rebuild currently is, and how long each stage took.
+///
+/// The rebuild runs on its own thread and a stage that never returns (a Shell enumeration
+/// waiting on a third-party handler, a registry hive being scanned) leaves
+/// `rebuilds = 0` forever with an empty catalog and no way to tell which scan it was.
+static REBUILD_STAGE: Mutex<&'static str> = Mutex::new("idle");
+static REBUILD_STAGE_STARTED: Mutex<Option<Instant>> = Mutex::new(None);
+static REBUILD_STAGES: Mutex<Vec<(&'static str, u64)>> = Mutex::new(Vec::new());
+
+fn note_rebuild_stage(name: &'static str) {
+    let now = Instant::now();
+    let previous = {
+        let mut stage = REBUILD_STAGE.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = *stage;
+        *stage = name;
+        previous
+    };
+    let elapsed = {
+        let mut started = REBUILD_STAGE_STARTED.lock().unwrap_or_else(|e| e.into_inner());
+        let elapsed = started.map(|s| s.elapsed().as_millis() as u64);
+        *started = Some(now);
+        elapsed
+    };
+    if let Some(ms) = elapsed {
+        if let Ok(mut rows) = REBUILD_STAGES.lock() {
+            rows.push((previous, ms));
+            if rows.len() > 24 {
+                rows.remove(0);
+            }
+        }
+    }
+}
+
+/// Catalog timing, surfaced through `diagnostic_state` as `appCatalog`.
+pub fn catalog_diagnostics() -> serde_json::Value {
+    serde_json::json!({
+        "cacheSource": CACHE_SOURCE.lock().map(|s| *s).unwrap_or("none"),
+        "signalsMs": SIGNALS_MS.load(Ordering::Relaxed),
+        "signals": SIGNALS_COUNT.load(Ordering::Relaxed),
+        "installedMs": INSTALLED_MS.load(Ordering::Relaxed),
+        "rebuildMs": REBUILD_MS.load(Ordering::Relaxed),
+        "rebuilds": REBUILDS.load(Ordering::Relaxed),
+        "apps": CATALOG_APPS.load(Ordering::Relaxed),
+        "listMs": LIST_MS.load(Ordering::Relaxed),
+        "mergeMs": MERGE_MS.load(Ordering::Relaxed),
+        "appsFolderError": last_appsfolder_error(),
+        "rebuildStage": REBUILD_STAGE.lock().map(|s| *s).unwrap_or("idle"),
+        "rebuildStageMs": REBUILD_STAGE_STARTED
+            .lock()
+            .ok()
+            .and_then(|s| *s)
+            .map(|s| s.elapsed().as_millis() as u64)
+            .unwrap_or(0),
+        "rebuildStages": REBUILD_STAGES
+            .lock()
+            .map(|rows| rows.iter().map(|(name, ms)| serde_json::json!({ "stage": name, "ms": ms })).collect::<Vec<_>>())
+            .unwrap_or_default(),
+    })
+}
+
 fn rebuilding() -> &'static AtomicBool {
     static FLAG: AtomicBool = AtomicBool::new(false);
     &FLAG
@@ -140,7 +248,16 @@ fn kick_rebuild(signals: Vec<ChangeSignal>) {
         .name("cu-app-catalog".into())
         .spawn(move || {
             let now = now_unix();
+            let started = Instant::now();
             let apps = rebuild_installed();
+            // The catalog changed, so the previously resolved product names may no longer
+            // describe the same executables.
+            if let Ok(mut slot) = PRODUCT_NAMES.lock() {
+                *slot = None;
+            }
+            REBUILD_MS.store(ms_since(started), Ordering::Relaxed);
+            CATALOG_APPS.store(apps.len() as u64, Ordering::Relaxed);
+            REBUILDS.fetch_add(1, Ordering::Relaxed);
             write_cache(&apps, &signals, now);
             if let Ok(mut guard) = catalog_cell().lock() {
                 *guard = Some(CachedCatalog {
@@ -920,31 +1037,44 @@ fn shortcut_pair() -> Option<(IShellLinkW, IPersistFile)> {
 fn rebuild_installed() -> Vec<ShellApp> {
     let mut apps = Vec::new();
     let mut index = HashMap::new();
+    note_rebuild_stage("shortcut-pair");
     let pair = shortcut_pair();
     let (link, persist) = match &pair {
         Some((link, persist)) => (Some(link), Some(persist)),
         None => (None, None),
     };
     if let Some(path) = env_join("APPDATA", START_MENU_TAIL) {
+        note_rebuild_stage("start-menu-user");
         scan_start_menu(&path, link, persist, &mut apps, &mut index);
     }
     if let Some(path) = env_join("ProgramData", START_MENU_TAIL) {
+        note_rebuild_stage("start-menu-machine");
         scan_start_menu(&path, link, persist, &mut apps, &mut index);
     }
     if let Some(path) = env_join("LOCALAPPDATA", WINDOWSAPPS_TAIL) {
+        note_rebuild_stage("windows-apps-aliases");
         scan_windows_apps(&path, &mut apps, &mut index);
     }
+    note_rebuild_stage("apps-folder");
     clear_appsfolder_error();
     if let Err(err) = scan_apps_folder(&mut apps, &mut index) {
         set_appsfolder_error(err.message.clone());
     }
+    note_rebuild_stage("app-paths-hkcu");
     scan_app_paths(HKEY_CURRENT_USER, APP_PATHS, &mut apps, &mut index);
+    note_rebuild_stage("app-paths-hklm");
     scan_app_paths(HKEY_LOCAL_MACHINE, APP_PATHS, &mut apps, &mut index);
+    note_rebuild_stage("uninstall-hkcu");
     scan_uninstall(HKEY_CURRENT_USER, UNINSTALL, &mut apps, &mut index);
+    note_rebuild_stage("uninstall-hklm");
     scan_uninstall(HKEY_LOCAL_MACHINE, UNINSTALL, &mut apps, &mut index);
+    note_rebuild_stage("uninstall-wow64");
     scan_uninstall(HKEY_LOCAL_MACHINE, UNINSTALL_WOW64, &mut apps, &mut index);
+    note_rebuild_stage("appx-packages");
     scan_appx_packages(&mut apps, &mut index);
+    note_rebuild_stage("appx-applications");
     scan_appx_applications(HKEY_LOCAL_MACHINE, HKLM_APPX, &mut apps, &mut index);
+    note_rebuild_stage("done");
     apps
 }
 
@@ -993,7 +1123,10 @@ fn read_cache_any() -> Option<(Vec<ShellApp>, Vec<ChangeSignal>, u64)> {
 }
 
 fn installed_apps() -> Vec<ShellApp> {
+    let started = Instant::now();
     let signals = collect_signals();
+    SIGNALS_MS.store(ms_since(started), Ordering::Relaxed);
+    SIGNALS_COUNT.store(signals.len() as u64, Ordering::Relaxed);
     let now = now_unix();
     {
         let mut guard = catalog_cell().lock().unwrap_or_else(|e| e.into_inner());
@@ -1002,7 +1135,11 @@ fn installed_apps() -> Vec<ShellApp> {
             if !fresh {
                 kick_rebuild(signals.clone());
             }
-            return cached.apps.clone();
+            let apps = cached.apps.clone();
+            note_cache_source(if fresh { "memory-fresh" } else { "memory-stale" });
+            INSTALLED_MS.store(ms_since(started), Ordering::Relaxed);
+            CATALOG_APPS.store(apps.len() as u64, Ordering::Relaxed);
+            return apps;
         }
         if let Some(apps) = read_cache(&signals) {
             *guard = Some(CachedCatalog {
@@ -1010,6 +1147,9 @@ fn installed_apps() -> Vec<ShellApp> {
                 signals: signals.clone(),
                 cached_at: now,
             });
+            note_cache_source("disk-fresh");
+            INSTALLED_MS.store(ms_since(started), Ordering::Relaxed);
+            CATALOG_APPS.store(apps.len() as u64, Ordering::Relaxed);
             return apps;
         }
         if let Some((apps, cached_signals, cached_at)) = read_cache_any() {
@@ -1019,10 +1159,15 @@ fn installed_apps() -> Vec<ShellApp> {
                 cached_at,
             });
             kick_rebuild(signals);
+            note_cache_source("disk-stale");
+            INSTALLED_MS.store(ms_since(started), Ordering::Relaxed);
+            CATALOG_APPS.store(apps.len() as u64, Ordering::Relaxed);
             return apps;
         }
     }
     kick_rebuild(signals);
+    note_cache_source("none");
+    INSTALLED_MS.store(ms_since(started), Ordering::Relaxed);
     Vec::new()
 }
 
@@ -1078,7 +1223,16 @@ fn attach_usage(app: &mut AppInfo, shell: Option<&ShellApp>, usage: &HashMap<Str
 
 /// Installed Start Menu / WindowsApps / registry apps merged with open windows + UserAssist.
 pub fn list_apps(windows: &[WindowRef]) -> Vec<AppInfo> {
+    let started = Instant::now();
     let installed = installed_apps();
+    let merge_started = Instant::now();
+    let apps = list_apps_merge(installed, windows);
+    MERGE_MS.store(ms_since(merge_started), Ordering::Relaxed);
+    LIST_MS.store(ms_since(started), Ordering::Relaxed);
+    apps
+}
+
+fn list_apps_merge(installed: Vec<ShellApp>, windows: &[WindowRef]) -> Vec<AppInfo> {
     let usage = assist::read_user_assist();
     let mut apps: Vec<AppInfo> = Vec::new();
     let mut shells: Vec<Option<ShellApp>> = Vec::new();

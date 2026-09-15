@@ -285,7 +285,7 @@ The note travels as its own block, so the official payload keeps its exact key s
 | `stealFocus` | `true` | Input methods activate their target window |
 | `maxImageEdge` | `0` | DSH extension: `0` keeps the official behaviour (no downscale); set e.g. `1280` to trade image quality for tokens |
 | `approveLaunch` | `true` | Ask before `launch_app` |
-| `timeoutMs` / `launchAppTimeoutMs` | `10000` / `15000` | Official request budgets; a timeout rejects in-flight requests |
+| `timeoutMs` / `launchAppTimeoutMs` / `listAppsTimeoutMs` | `10000` / `15000` / `30000` | Request budgets; a timeout rejects in-flight requests **and kills the helper** (official transport). `list_apps` is the one method that builds the installed-app catalog before it answers, so it gets a larger DSH budget: killing the helper for a slow catalog throws the warm cache away and makes the next attempt cold again |
 | `startupTimeoutMs` | `15000` | Helper boot budget |
 | `preserveHelperOnTimeout` | `false` | Keep the helper alive after a timeout for debugging |
 | `allowedApps` | `[]` | Non-empty means only these app ids may be observed or driven |
@@ -418,6 +418,7 @@ docs/                   plugin readmes and assets
 | The desktop is locked | Computer Use stops and asks you to unlock. It never drives `LockApp.exe`. |
 | Two cursors on screen | The overlay draws a synthetic cursor and blanks the system one. If you ever see both, read `diagnostic_state` → `overlayState.systemCursorFailures`: a non-zero count means the suppression failed, which is the only designed path to two pointers. |
 | The status pill never appears | Read `computer_use_health` → `overlay.captureExclusion`. The default `mask` always keeps the pill on screen. The official-style `wda` affinity stops the DWM from presenting the pill's composition content *on screen* on some Windows/DWM/GPU combinations (the operator then sees the synthetic cursor and no pill, while every overlay API still reports `visible=true`); that is why it is opt-in. A stuck mask would show up as `overlay.captureMasked = true`, and the helper lifts one itself after five seconds. |
+| `list_apps` times out | The installed-app catalog is the one method that does real work before answering. `computer_use_health` → `overlay`/`appCatalog` timing and the helper's own `%LOCALAPPDATA%\computer-use-app-catalog\slow-requests.log` (every request over `DSH_CU_SLOW_REQUEST_MS`, default 1 s, with catalog and rebuild-stage timing) are the two records that survive: a transport timeout kills the helper, so its in-process diagnostics are gone by the time you can ask. Raise `listAppsTimeoutMs` if the catalog is genuinely slow on the machine |
 | An app has an unusable accessibility tree | Common for self-drawn UIs. Use the screenshot path, or prefer the app own scripting interface, then record what you learned with `computer_use_experience`. |
 
 ---

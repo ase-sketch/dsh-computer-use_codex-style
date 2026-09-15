@@ -305,6 +305,59 @@ impl Drop for InflightGuard {
     }
 }
 
+/// Requests slow enough that the transport's own budget is at risk.
+///
+/// The transport kills the helper when a request exceeds its budget, so the process's own
+/// diagnostics are gone by the time anyone can ask what was slow: the model sees only
+/// "computer-use request timed out". This appends one JSON line per slow request to
+/// `%LOCALAPPDATA%\computer-use-app-catalog\slow-requests.log` (bounded, local only,
+/// never sent anywhere) with the method, the duration and the catalog timing, so a
+/// sporadic timeout is diagnosable after the fact instead of unreproducible.
+///
+/// `DSH_CU_SLOW_REQUEST_MS` overrides the threshold (default 1000 ms; 0 logs every
+/// request, which is the supported way to record a baseline).
+fn note_slow_request(label: &str, elapsed_ms: u64) {
+    let threshold = std::env::var("DSH_CU_SLOW_REQUEST_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(1000);
+    if elapsed_ms < threshold {
+        return;
+    }
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(local).join("computer-use-app-catalog");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join("slow-requests.log");
+    // Bounded: drop the oldest lines once the file passes 128 KB.
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > 128 * 1024 {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                let rows: Vec<&str> = text.lines().rev().take(200).collect();
+                let kept: Vec<&str> = rows.into_iter().rev().collect();
+                let _ = std::fs::write(&path, kept.join("\n") + "\n");
+            }
+        }
+    }
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let line = json!({
+        "at": at,
+        "label": label,
+        "elapsedMs": elapsed_ms,
+        "processId": std::process::id(),
+        "appCatalog": app_catalog::catalog_diagnostics(),
+    });
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
 fn handle(state: &Mutex<HelperState>, req: Request) -> Value {
     IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
     let _inflight = InflightGuard;
@@ -326,7 +379,8 @@ fn handle(state: &Mutex<HelperState>, req: Request) -> Value {
             Some(Value::Object(map)) => map.clone(),
             _ => Map::new(),
         };
-        return match gate_and_dispatch(state, name, &arguments, started, budget_ms) {
+        let label = format!("call {name}");
+        let value = match gate_and_dispatch(state, name, &arguments, started, budget_ms) {
             Ok(value) => {
                 let (value, images) = images::detach_images(value);
                 let value = if tools::is_void(name) { Value::Null } else { value };
@@ -339,18 +393,22 @@ fn handle(state: &Mutex<HelperState>, req: Request) -> Value {
             }
             Err(err) => err.to_response(id, jsonrpc),
         };
+        note_slow_request(&label, started.elapsed().as_millis() as u64);
+        return value;
     }
     let result = if method == "close" {
         dispatch(state, "shutdown", &params)
     } else {
         gate_and_dispatch(state, &method, &params, started, budget_ms)
     };
-    match result {
+    let response = match result {
         Ok(value) if official => official_ok(id, value),
         Err(err) => err.to_response(id, jsonrpc),
         Ok(value) if jsonrpc => protocol::jsonrpc_ok(id, value),
         Ok(value) => official_ok(id, value),
-    }
+    };
+    note_slow_request(&method, started.elapsed().as_millis() as u64);
+    response
 }
 
 fn target_app(method: &str, params: &Map<String, Value>) -> String {
@@ -974,11 +1032,15 @@ fn diagnostic_state(state: &Mutex<HelperState>) -> Result<Value, Error> {
         }
         body["inputMonitor"] = interrupt::snapshot();
         body["appsFolderError"] = json!(app_catalog::last_appsfolder_error());
+        // Catalog timing: the one Computer Use method that can run for seconds on a cold
+        // machine, and the one the transport's 10 s budget turns into a helper restart.
+        body["appCatalog"] = app_catalog::catalog_diagnostics();
         body["computerUseEnabled"] = json!(policy::computer_use_enabled());
         body["overlayState"] = overlay::diagnostics();
         body["captureState"] = capture::capture_diagnostics();
     } else {
         body = overlay_cache_diagnostics(body, None, None);
+        body["appCatalog"] = app_catalog::catalog_diagnostics();
         body["aumid"] = json!("");
         body["inputMonitor"] = interrupt::snapshot();
         body["overlayState"] = overlay::diagnostics();

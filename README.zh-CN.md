@@ -285,7 +285,7 @@ invalidate them, and the current observation always wins over a stored note.
 | `stealFocus` | `true` | 输入方法会自动激活目标窗口 |
 | `maxImageEdge` | `0` | DSH 扩展：`0` 保持官方行为（不缩放）；设为 `1280` 可用画质换 token |
 | `approveLaunch` | `true` | `launch_app` 前询问 |
-| `timeoutMs` / `launchAppTimeoutMs` | `10000` / `15000` | 官方请求预算；超时会拒绝在途请求 |
+| `timeoutMs` / `launchAppTimeoutMs` / `listAppsTimeoutMs` | `10000` / `15000` / `30000` | 请求预算；超时会拒绝在途请求**并杀掉 helper**（官方传输语义）。`list_apps` 是唯一在作答前要构建「已安装应用目录」的方法，所以给它一条更宽的 DSH 预算：为了一个慢目录杀掉 helper，会把热缓存一起丢掉，下一次尝试又变成冷的 |
 | `startupTimeoutMs` | `15000` | helper 启动预算 |
 | `preserveHelperOnTimeout` | `false` | 超时后保留 helper 以便排查 |
 | `allowedApps` | `[]` | 非空时只有这些 app id 可被观察或驱动 |
@@ -418,7 +418,7 @@ docs/                   插件说明与图片资源
 | 桌面被锁定 | Computer Use 会停下并要求你解锁，它绝不操作 `LockApp.exe`。 |
 | 屏幕上出现两个光标 | 覆盖层会画一个合成光标并把系统光标置空。真出现两个时，读 `diagnostic_state` → `overlayState.systemCursorFailures`：计数非零说明压制失败，那是设计上唯一会通向「双指针」的路径。 |
 | 状态药丸一直不出现 | 读 `computer_use_health` → `overlay.captureExclusion`。默认的 `mask` 永远让药丸留在屏幕上。官方风格的 `wda` 亲和性会在某些 Windows/DWM/GPU 组合下让 DWM **连屏幕上都不再合成**药丸的 DirectComposition 内容（操作者只看到合成光标、看不到药丸，而所有覆盖层 API 仍然报 `visible=true`），所以它是可选项。遮蔽卡住会表现为 `overlay.captureMasked = true`，而 helper 会在五秒后自行解除。 |
-| 某应用的无障碍树不可用 | 自绘 UI 常见。走截图路径，或优先使用该应用自带的脚本接口，然后用 `computer_use_experience` 把结论记下来。 |
+| `list_apps` 超时 | 已安装应用目录是唯一在作答前真的要做重活的方法。两份能留下来的记录：`computer_use_health` → `overlay`/`appCatalog` 计时，以及 helper 自己写的 `%LOCALAPPDATA%\computer-use-app-catalog\slow-requests.log`（记录超过 `DSH_CU_SLOW_REQUEST_MS`（默认 1 秒）的每个请求，含目录与重建阶段耗时）。传输层超时会杀掉 helper，所以进程内诊断在你来得及问之前就已经消失；如果这台机器上目录确实慢，调大 `listAppsTimeoutMs` |
 
 ---
 
