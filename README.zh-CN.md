@@ -47,7 +47,7 @@
 |---|---|
 | **完整的官方工具面** | Codex官方 `window2` 的全部 13 个方法 —— `list_windows`、`get_window`、`list_apps`、`launch_app`、`get_window_state`、`click`、`press_key`、`type_text`、`scroll`、`set_value`、`drag`、`perform_secondary_action`、`activate_window` —— 名称、参数、默认值、返回体与错误串都与Codex一致。 |
 | **真实输入与真实截图** | 输入走 `SendInput`，无障碍树走 UI Automation，截图走 `Windows.Graphics.Capture`（窗口被遮挡也能拍）。截图以视觉 image part 送达模型，JSON 里不含 base64。 |
-| **可见、可中断的覆盖层** | 状态药丸 + 带弹簧动画的合成光标，绘制在 layered window 且被排除出捕获。任何时候按 **Esc** 都能中断当前回合。 |
+| **可见、可中断的覆盖层** | 状态药丸 + 带弹簧动画的合成光标。药丸只在“截图那一瞬”被隐藏：模型永远读不到自己的状态药丸，而操作者始终看得到它。任何时候按 **Esc** 都能中断当前回合。 |
 | **对照真机验证** | 行为对着官方插件与其 helper 做门禁：AX 树语法、覆盖层像素、光标运动、截图新鲜度、传输预算、批准文案、回合生命周期。 |
 | **Harness 原生，不是 MCP 套壳** | DSH 工具 + 随包技能，而不是一个 JavaScript REPL。插件本身是一个 DSH **bundle**：`package.json` + `cordis.patch.yml` + 包根目录下的入口模块。 |
 | **双平面、单 sidecar** | 桌面是进程级资源：指针、覆盖层、截图与批准流放在 HOST 平面；模型可见的工具放在 agent preset，普通编码会话不会拿到鼠标。 |
@@ -192,7 +192,7 @@ flowchart TB
 | `click_element`、`scroll_element` | 需显式开启 | 旧版 window-v1 别名 |
 | `session_note`、`session_state`、`diagnostic_state`、`end_turn` | 诊断 | 会话草稿、状态转储与回合控制 |
 
-想确认到底挂上了什么，最快的办法是 `computer_use_health`：后端、暴露的工具目录、批准策略、注入了哪些环境变量、文档门禁，经验层状态，以及覆盖层诊断（当前用哪条药丸渲染路径、推了多少帧、系统光标是否被压制）。
+想确认到底挂上了什么，最快的办法是 `computer_use_health`：后端、暴露的工具目录、批准策略、注入了哪些环境变量、文档门禁，经验层状态，以及覆盖层诊断（当前用哪条药丸渲染路径、推了多少帧、系统光标是否被压制、当前用哪种防捕获模式、此刻是否正处于截图遮蔽中）。
 
 ---
 
@@ -290,6 +290,7 @@ invalidate them, and the current observation always wins over a stored note.
 | `preserveHelperOnTimeout` | `false` | 超时后保留 helper 以便排查 |
 | `allowedApps` | `[]` | 非空时只有这些 app id 可被观察或驱动 |
 | `envAllowlist` | `[]` | 在随包允许列表之外额外转发给 helper 的环境变量名 |
+| `overlayCaptureExclusion` | `mask` | 状态药丸如何避开模型看到的截图：`mask`（默认）在单次捕获期间用合成器隐藏药丸，操作者始终能看到；`wda` 改用 `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`；`off` 不排除，药丸会出现在截图里 |
 
 ### 经验层（同一行上的 `experience.*`）
 
@@ -416,6 +417,7 @@ docs/                   插件说明与图片资源
 | 运行过程中焦点跳动 | `stealFocus: true` 的预期行为：输入方法会激活目标窗口。 |
 | 桌面被锁定 | Computer Use 会停下并要求你解锁，它绝不操作 `LockApp.exe`。 |
 | 屏幕上出现两个光标 | 覆盖层会画一个合成光标并把系统光标置空。真出现两个时，读 `diagnostic_state` → `overlayState.systemCursorFailures`：计数非零说明压制失败，那是设计上唯一会通向「双指针」的路径。 |
+| 状态药丸一直不出现 | 读 `computer_use_health` → `overlay.captureExclusion`。默认的 `mask` 永远让药丸留在屏幕上。官方风格的 `wda` 亲和性会在某些 Windows/DWM/GPU 组合下让 DWM **连屏幕上都不再合成**药丸的 DirectComposition 内容（操作者只看到合成光标、看不到药丸，而所有覆盖层 API 仍然报 `visible=true`），所以它是可选项。遮蔽卡住会表现为 `overlay.captureMasked = true`，而 helper 会在五秒后自行解除。 |
 | 某应用的无障碍树不可用 | 自绘 UI 常见。走截图路径，或优先使用该应用自带的脚本接口，然后用 `computer_use_experience` 把结论记下来。 |
 
 ---

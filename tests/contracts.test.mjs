@@ -676,6 +676,25 @@ test('host and tool configs validate and default to the official surface', () =>
   assert.deepEqual(tool.approvalTools, {})
 })
 
+test('overlay capture exclusion: on-screen-safe by default and wired to the helper', () => {
+  // The pill must be visible to the operator on every machine. The affinity mode is the
+  // one that silently blanked the DirectComposition content on screen (2026-09-15), so it
+  // can never be the default and an unknown value must not fall through to it.
+  const host = HostConfig({})
+  assert.equal(host.overlayCaptureExclusion, 'mask', 'the pill stays on screen by default')
+  assert.equal(HostConfig({ overlayCaptureExclusion: 'wda' }).overlayCaptureExclusion, 'wda')
+  assert.equal(HostConfig({ overlayCaptureExclusion: 'off' }).overlayCaptureExclusion, 'off')
+  assert.throws(() => HostConfig({ overlayCaptureExclusion: 'affinity' }), Error)
+  // The plugin writes the mode into the environment and the Rust helper reads it; a
+  // rename on one side would silently fall back to a helper default, which is exactly the
+  // class of drift that hid the pill.
+  const sidecar = source('sidecar.js')
+  const overlay = fs.readFileSync(path.join(pluginRoot, 'helper-rs', 'src', 'overlay', 'mod.rs'), 'utf8')
+  assert.match(sidecar, /DSH_CU_OVERLAY_CAPTURE_EXCLUSION/)
+  assert.match(overlay, /DSH_CU_OVERLAY_CAPTURE_EXCLUSION/)
+  assert.match(sidecar, /overlayCaptureExclusion/)
+})
+
 test('D-E maxImageEdge defaults to the official no-cap behaviour and stays labelled', () => {
   const host = HostConfig({})
   // Decision D-E: parity first. 0 ships the screenshot the official helper ships; a

@@ -83,6 +83,26 @@ Remove-Item Env:\DSH_CU_OVERLAY_CAPTURABLE
 Gate 'pill: fallback path selected' ($pill2 -match 'displayComposition=false') (($pill2 -split $NL | Select-String 'overlay visible=').Line)
 Gate 'pill: accent body drawn (layered fallback)' ((AccentCount $px2) -gt 500) (($px2 -split $NL | Select-String 'pill pixels').Line)
 
+# --- 4b. production exclusion: on screen for the operator, absent from the frame ----
+# The pill gates above set DSH_CU_OVERLAY_CAPTURABLE, which *disables* the capture
+# exclusion: they prove the pixels are drawn, not that the shipped default keeps the pill
+# visible AND out of the model's screenshots. This gate runs the shipped default (no
+# override) and, as a control, the same capture with the exclusion switched off.
+Get-Process dsh-computer-use -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Milliseconds 400
+$mask = & node (Join-Path $parity 'pill-capture-mask.mjs') 2>&1 | Out-String
+$maskLines = $mask -split $NL
+foreach ($line in ($maskLines | Select-String -Pattern '^(PASS|FAIL) ')) { Write-Output ('    ' + $line.Line) }
+$maskSkips = @($maskLines | Select-String -Pattern '^SKIP ').Count
+$maskFails = @($maskLines | Select-String -Pattern '^FAIL ').Count
+if ($maskSkips -gt 0) {
+  # No foreground window (locked desktop) means no measurement is possible; the other
+  # parity gates fail loudly in that state, so this one reports the skip instead.
+  Gate 'capture: pill stays on screen and out of the frame (skipped)' $true (($maskLines | Select-String -Pattern '^SKIP ').Line)
+} else {
+  Gate 'capture: pill stays on screen and out of the frame' ($maskFails -eq 0) (($maskLines | Select-String 'pill-capture-mask:').Line)
+}
+
 # --- 5. window states: observe / activate_window / retry --------------------
 Get-Process dsh-computer-use -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 400

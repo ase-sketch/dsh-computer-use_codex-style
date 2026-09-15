@@ -93,6 +93,17 @@ export const Config = Schema.object({
    * setting, so this knob is the single place the pointer size is decided.
    */
   cursorScale: Schema.number().default(1),
+  /**
+   * How the status pill is kept out of the screenshots the model reads.
+   *
+   * `mask` (default) hides the pill in the compositor for the duration of one capture:
+   * the operator keeps seeing it, the model never reads it back. `wda` applies
+   * `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` to the pill window instead -- the
+   * official-style affinity, which on some Windows/DWM/GPU combinations stops the DWM
+   * from presenting the pill *on screen* as well (operator sees the fake cursor and no
+   * pill, verified 2026-09-15). `off` leaves the pill in the frame.
+   */
+  overlayCaptureExclusion: Schema.union(['mask', 'wda', 'off']).default('mask'),
   approveLaunch: Schema.boolean().default(true),
   /** Request budget in ms. Official transport uses 10 s for every request. */
   timeoutMs: Schema.number().default(10000),
@@ -167,6 +178,7 @@ export default class ComputerUseService extends Service {
       stealFocus: true,
       maxImageEdge: 0,
       cursorScale: 1,
+      overlayCaptureExclusion: 'mask',
       approveLaunch: true,
       timeoutMs: 10000,
       launchAppTimeoutMs: 15000,

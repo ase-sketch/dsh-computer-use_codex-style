@@ -50,6 +50,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_METRICS,
     DWRITE_TEXT_RANGE,
 };
+use windows::Win32::Graphics::Dwm::DwmFlush;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Dxgi::{
     IDXGIDevice, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
@@ -211,6 +212,59 @@ static SUPPRESS_FAILURES: AtomicU64 = AtomicU64::new(0);
 static SUPPRESS_REQUESTS: AtomicU64 = AtomicU64::new(0);
 static SUPPRESS_REASSERTS: AtomicU64 = AtomicU64::new(0);
 static THREAD_ID: AtomicU32 = AtomicU32::new(0);
+/// True between `mask_for_capture()` and `unmask_after_capture()`: the pill is
+/// hidden in the compositor while a screenshot is being taken.
+static CAPTURE_MASKED: AtomicBool = AtomicBool::new(false);
+/// Watchdog deadline for the mask. A mask that is never lifted would hide the pill
+/// for the operator forever, which is the exact symptom this mechanism exists to
+/// avoid, so the pump lifts it on its own.
+static CAPTURE_MASK_DEADLINE: Mutex<Option<Instant>> = Mutex::new(None);
+static CAPTURE_MASK_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Upper bound for one masked capture. A WGC frame pool answers in well under a
+/// second; five seconds is far past "stuck" and far below "the operator notices".
+const CAPTURE_MASK_MAX_MS: u64 = 5000;
+
+/// How the pill is kept out of the screenshots the model reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CaptureExclusion {
+    /// Hide the pill in the compositor for the duration of a capture (default). The
+    /// operator keeps seeing the pill, the model never sees it, and no window
+    /// affinity is involved.
+    Mask,
+    /// `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` on the pill window -- the
+    /// official-style exclusion. On some Windows/DWM/GPU combinations the DWM stops
+    /// presenting the DirectComposition content *on screen* as well, so the operator
+    /// sees the fake cursor and no pill at all while every API reports `visible=true`
+    /// (reproduced 2026-09-15 on a 2560x1440 @150% desktop). Opt-in for that reason.
+    Wda,
+    /// No exclusion: the pill also shows up in the model's screenshots.
+    Off,
+}
+
+/// Parse the `DSH_CU_OVERLAY_CAPTURE_EXCLUSION` value. Pure, so it is testable
+/// without a desktop session; `capture_exclusion()` owns the environment lookup.
+fn parse_capture_exclusion(value: Option<&str>) -> CaptureExclusion {
+    match value.map(|raw| raw.trim().to_ascii_lowercase()).as_deref() {
+        Some("wda") => CaptureExclusion::Wda,
+        Some("off") | Some("none") | Some("0") | Some("false") => CaptureExclusion::Off,
+        // Anything else -- including an unset variable and a typo -- lands on the
+        // default that keeps the pill on screen.
+        _ => CaptureExclusion::Mask,
+    }
+}
+
+pub fn capture_exclusion() -> CaptureExclusion {
+    // The diagnostic override wins: it exists so a capture-based probe can read the
+    // pill's own pixels (see parity/pill-reshow.mjs).
+    if std::env::var("DSH_CU_OVERLAY_CAPTURABLE").is_ok() {
+        return CaptureExclusion::Off;
+    }
+    parse_capture_exclusion(
+        std::env::var("DSH_CU_OVERLAY_CAPTURE_EXCLUSION")
+            .ok()
+            .as_deref(),
+    )
+}
 
 type OverlayReply = Sender<Result<(), String>>;
 
@@ -219,6 +273,7 @@ enum Cmd {
     Hide { reply: Option<OverlayReply> },
     Raise,
     Recreate,
+    CaptureMask { on: bool, reply: Option<OverlayReply> },
     Cursor {
         x: f32,
         y: f32,
@@ -549,6 +604,22 @@ pub fn diagnostics() -> serde_json::Value {
             "pillLastAlpha".to_string(),
             serde_json::json!(f32::from_bits(PILL_LAST_ALPHA_BITS.load(Ordering::Relaxed))),
         );
+        // How the pill is being kept out of the model's screenshots, and whether a
+        // capture mask is up right now. A stuck `captureMasked` is the one way this
+        // design could hide the pill from the operator, so it must be readable.
+        object.insert(
+            "captureExclusion".to_string(),
+            serde_json::json!(match capture_exclusion() {
+                CaptureExclusion::Mask => "mask",
+                CaptureExclusion::Wda => "wda",
+                CaptureExclusion::Off => "off",
+            }),
+        );
+        object.insert("captureMasked".to_string(), serde_json::json!(CAPTURE_MASKED.load(Ordering::SeqCst)));
+        object.insert(
+            "captureMaskCount".to_string(),
+            serde_json::json!(CAPTURE_MASK_COUNT.load(Ordering::SeqCst)),
+        );
         let (sprite_px, hotspot_px) = cursor_metrics(unsafe { GetDpiForSystem() });
         object.insert("cursorSpritePx".to_string(), serde_json::json!(sprite_px));
         object.insert("cursorHotspotPx".to_string(), serde_json::json!(hotspot_px));
@@ -764,6 +835,14 @@ pub fn exclude_from_capture(hwnd: isize) -> bool {
 /// window in `hwnds()` here silently re-breaks that on every observe, because
 /// `hwnds()` also carries the cursor window.
 pub fn exclude_overlay_from_capture() -> bool {
+    // Only the affinity mode brands the window; the default (Mask) hides the pill for
+    // the duration of one capture and leaves the window alone. Without this guard the
+    // affinity was applied on *every* observe, which outlives the screenshot: on a
+    // desktop where the DWM then stops presenting the DirectComposition content, the
+    // operator lost the pill for the rest of the session (observed 2026-09-15).
+    if capture_exclusion() != CaptureExclusion::Wda {
+        return true;
+    }
     let mut all = true;
     for id in hwnds() {
         if is_cursor_overlay(id) {
@@ -866,6 +945,39 @@ pub fn hide() {
     if !overlay_windows_visible() {
         crate::interrupt::disarm();
     }
+}
+
+/// Hide the pill for the duration of one screenshot so the model never reads its own
+/// status pill back, while the operator keeps seeing it. Returns true when a mask was
+/// requested; the caller must lift it with `unmask_after_capture()`.
+pub fn mask_for_capture() -> bool {
+    if capture_exclusion() != CaptureExclusion::Mask {
+        return false;
+    }
+    // Nothing on screen, nothing to hide: masking would only risk a stuck mask.
+    if !VISIBLE.load(Ordering::SeqCst) {
+        return false;
+    }
+    if wait_cmd(|reply| Cmd::CaptureMask { on: true, reply: Some(reply) }).is_err() {
+        // No overlay thread, or it is wedged. Skipping the mask can only make a
+        // screenshot contain the pill; it can never hide the pill from the operator.
+        return false;
+    }
+    true
+}
+
+/// Lift the mask requested by `mask_for_capture()`.
+///
+/// Called on every capture, including the ones that never masked (the overlay was hidden,
+/// the affinity mode is in force, the mask command timed out). The no-op guard keeps those
+/// captures from issuing a command that would cancel a running fade animation or re-write
+/// the root opacity for no reason, while still lifting a mask that the worker did apply
+/// even though the caller never saw the reply.
+pub fn unmask_after_capture() {
+    if !CAPTURE_MASKED.load(Ordering::SeqCst) {
+        return;
+    }
+    let _ = wait_cmd(|reply| Cmd::CaptureMask { on: false, reply: Some(reply) });
 }
 
 fn restore_system_cursors() {
@@ -1697,6 +1809,17 @@ fn ui_loop(rx: mpsc::Receiver<Cmd>, hwnd_slot: std::sync::Arc<Mutex<Vec<isize>>>
                         note_cmd("Recreate");
                         recreate(&mut ui, &hwnd_slot);
                     }
+                    Cmd::CaptureMask { on, reply } => {
+                        note_cmd("CaptureMask");
+                        let result = set_capture_mask(&mut ui, on);
+                        if on {
+                            // The mask only helps if the compositor has committed the
+                            // transparent frame: the capture reads the composed desktop,
+                            // not our visual tree.
+                            let _ = DwmFlush();
+                        }
+                        send_reply(reply, result);
+                    }
                     Cmd::Cursor { x, y, press, reply } => {
                         note_cmd("Cursor");
                         let result = if FORCE_HIDDEN.load(Ordering::SeqCst) {
@@ -1759,6 +1882,20 @@ fn ui_loop(rx: mpsc::Receiver<Cmd>, hwnd_slot: std::sync::Arc<Mutex<Vec<isize>>>
             let drain_ms = drain_start.elapsed().as_millis() as u64;
             DRAIN_LAST_MS.store(drain_ms, Ordering::Relaxed);
             DRAIN_MAX_MS.fetch_max(drain_ms, Ordering::Relaxed);
+            // Watchdog: a mask that is never lifted would hide the pill from the
+            // operator for good, which is the very symptom this mechanism exists to
+            // avoid. The pump therefore lifts an expired mask itself.
+            if CAPTURE_MASKED.load(Ordering::SeqCst) {
+                let expired = CAPTURE_MASK_DEADLINE
+                    .lock()
+                    .ok()
+                    .and_then(|slot| *slot)
+                    .map(|deadline| Instant::now() >= deadline)
+                    .unwrap_or(false);
+                if expired {
+                    let _ = set_capture_mask(&mut ui, false);
+                }
+            }
             let branch_start = Instant::now();
             // The exit animation has to finish before the windows go away; the
             // official waits on the composition batch (`start display overlay exit
@@ -1960,7 +2097,8 @@ fn create_banner() -> windows::core::Result<HWND> {
         // for the human, so it must not appear in the model's own screenshots.
         // DSH_CU_OVERLAY_CAPTURABLE=1 keeps it capturable for diagnostics: the
         // affinity cannot be lifted from another process, so only the helper can.
-        if std::env::var("DSH_CU_OVERLAY_CAPTURABLE").is_err() {
+        // The default is NOT to touch the affinity at all: see CaptureExclusion.
+        if capture_exclusion() == CaptureExclusion::Wda {
             let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
         }
         // Official `set overlay accessible window name` (literal
@@ -2055,11 +2193,11 @@ fn apply_show(ui: &mut Ui) {
             );
         }
         let _ = InvalidateRect(Some(ui.hwnd), None, true);
-        // The model must not see the pill in its own screenshots, so the display
-        // overlay is excluded from capture. DSH_CU_OVERLAY_CAPTURABLE=1 keeps it
-        // capturable for desktop-capture diagnostics; SetWindowDisplayAffinity cannot
-        // be undone from another process, so the helper has to be the one to skip it.
-        if std::env::var("DSH_CU_OVERLAY_CAPTURABLE").is_err() {
+        // The model must not see the pill in its own screenshots. The default keeps the
+        // pill on screen and hides it only for the duration of a capture (see
+        // mask_for_capture / CaptureExclusion::Mask); the affinity is opt-in because it
+        // blanks the DirectComposition content on screen on some machines.
+        if capture_exclusion() == CaptureExclusion::Wda {
             let _ = SetWindowDisplayAffinity(ui.hwnd, WDA_EXCLUDEFROMCAPTURE);
         }
         if !ui.cursor.0.is_null() {
@@ -2106,6 +2244,12 @@ fn apply_show(ui: &mut Ui) {
 fn apply_hide(ui: &mut Ui) {
     ui.visible = false;
     ui.hidden_since_show = true;
+    // The pill is leaving the screen anyway: drop any capture mask so the watchdog
+    // deadline cannot fire against a later, unrelated show().
+    CAPTURE_MASKED.store(false, Ordering::SeqCst);
+    if let Ok(mut slot) = CAPTURE_MASK_DEADLINE.lock() {
+        *slot = None;
+    }
     WORKER_VISIBLE.store(false, Ordering::Relaxed);
     ui.snapped = false;
     stop_cursor_motion(ui);
@@ -2127,6 +2271,40 @@ fn apply_hide(ui: &mut Ui) {
         let _ = paint_pill(ui.hwnd, 1.0);
     }
     ui.fade_deadline = Some(Instant::now() + Duration::from_millis(FADE_MS as u64));
+}
+
+/// Hide (`on`) or restore the pill's own pixels without touching the window. The pill is
+/// a DirectComposition visual tree, so its root opacity can be dropped for the duration of
+/// one capture; the ULW fallback pushes a fully transparent frame instead. Neither path
+/// touches the cursor window: the model's own pointer must stay in its screenshots.
+fn set_capture_mask(ui: &mut Ui, on: bool) -> Result<(), String> {
+    if on {
+        CAPTURE_MASKED.store(true, Ordering::SeqCst);
+        CAPTURE_MASK_COUNT.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut slot) = CAPTURE_MASK_DEADLINE.lock() {
+            *slot = Some(Instant::now() + Duration::from_millis(CAPTURE_MASK_MAX_MS));
+        }
+    } else {
+        CAPTURE_MASKED.store(false, Ordering::SeqCst);
+        if let Ok(mut slot) = CAPTURE_MASK_DEADLINE.lock() {
+            *slot = None;
+        }
+    }
+    let alpha = if on || !ui.visible { 0.0 } else { 1.0 };
+    match ui.display.as_ref() {
+        Some(display) => {
+            // A running fade animation owns `Opacity`; dropping the animation first is
+            // what makes the value stick for the frame that is about to be captured.
+            let _ = display.root.StopAnimation(&HSTRING::from("Opacity"));
+            let _ = display.root.SetOpacity(alpha);
+        }
+        None => {
+            if !ui.hwnd.0.is_null() {
+                let _ = paint_pill(ui.hwnd, alpha);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Drop the overlay windows once the exit animation has flushed.
@@ -4604,6 +4782,28 @@ mod tests {
     fn sprite_accent(pixels: &[u8], width: usize, x: usize, y: usize) -> bool {
         let offset = (y * width + x) * 4;
         (pixels[offset] as i32 - pixels[offset + 2] as i32) > 150 && pixels[offset] > 180
+    }
+
+    #[test]
+    fn capture_exclusion_defaults_to_the_on_screen_safe_mask() {
+        // The affinity blanks the DirectComposition content on screen on some
+        // machines, so the default must never be the affinity; only an explicit
+        // "wda" opts into it, and an unknown value must not silently opt in.
+        assert_eq!(parse_capture_exclusion(None), CaptureExclusion::Mask);
+        assert_eq!(parse_capture_exclusion(Some("")), CaptureExclusion::Mask);
+        assert_eq!(parse_capture_exclusion(Some("mask")), CaptureExclusion::Mask);
+        assert_eq!(parse_capture_exclusion(Some("nonsense")), CaptureExclusion::Mask);
+        assert_eq!(parse_capture_exclusion(Some(" WDA ")), CaptureExclusion::Wda);
+        assert_eq!(parse_capture_exclusion(Some("wda")), CaptureExclusion::Wda);
+        assert_eq!(parse_capture_exclusion(Some("off")), CaptureExclusion::Off);
+        assert_eq!(parse_capture_exclusion(Some("none")), CaptureExclusion::Off);
+        assert_eq!(parse_capture_exclusion(Some("false")), CaptureExclusion::Off);
+    }
+
+    #[test]
+    fn capture_mask_watchdog_is_short_enough_to_be_invisible_to_the_operator() {
+        assert!(CAPTURE_MASK_MAX_MS >= 1000);
+        assert!(CAPTURE_MASK_MAX_MS <= 10_000);
     }
 
     #[test]

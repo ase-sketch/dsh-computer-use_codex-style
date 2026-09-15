@@ -262,6 +262,11 @@ struct CaptureJob {
     hwnd: isize,
     timeout_ms: u32,
     resp: mpsc::SyncSender<Result<CaptureFrame, String>>,
+    /// True when the pill was masked for this capture: the frame pool's parked frame
+    /// predates the mask, so the newest frame has to be dropped and a frame arriving
+    /// after the mask has to be waited for. Without this the capture returns the
+    /// pre-mask frame and the model reads the pill back.
+    fresh: bool,
 }
 
 static WORKER: Mutex<Option<mpsc::Sender<CaptureJob>>> = Mutex::new(None);
@@ -280,7 +285,7 @@ fn capture_worker_tx() -> Result<mpsc::Sender<CaptureJob>> {
             enable_thread_dpi();
             for job in rx {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    capture_one(job.hwnd, job.timeout_ms)
+                    capture_one(job.hwnd, job.timeout_ms, job.fresh)
                 }))
                 .unwrap_or_else(|_| Err(anyhow!(CAPTURE_TIMEOUT)));
                 let _ = job.resp.send(result.map_err(|e| e.to_string()));
@@ -298,7 +303,16 @@ pub fn capture_hwnd_timeout(hwnd: isize, timeout_ms: u32) -> Result<CaptureFrame
     enable_per_monitor_dpi();
     enable_thread_dpi();
     ensure_runtime().context("RoInitialize failed")?;
-    exclude_overlays();
+    // The mask has to come off on every path, including the error paths: a pill that
+    // stays hidden because a capture failed is the failure mode this whole mechanism
+    // exists to prevent. `restore_overlays` is idempotent and cheap when no mask ran.
+    let fresh = exclude_overlays();
+    let result = capture_hwnd_timeout_inner(hwnd, timeout_ms, fresh);
+    restore_overlays();
+    result
+}
+
+fn capture_hwnd_timeout_inner(hwnd: isize, timeout_ms: u32, fresh: bool) -> Result<CaptureFrame> {
     let mut last = anyhow!(WORKER_NOT_RUNNING);
     for _ in 0..2 {
         let tx = match capture_worker_tx() {
@@ -314,6 +328,7 @@ pub fn capture_hwnd_timeout(hwnd: isize, timeout_ms: u32) -> Result<CaptureFrame
                 hwnd,
                 timeout_ms,
                 resp: resp_tx,
+                fresh,
             })
             .is_err()
         {
@@ -472,7 +487,24 @@ fn ensure_runtime() -> Result<()> {
     }
 }
 
-fn exclude_overlays() {
+/// Keep our own overlay out of the frame that is about to be composed.
+///
+/// `Mask` (the default) hides the pill in the compositor for the duration of the
+/// capture: the operator keeps seeing it, the model never reads it back, and no window
+/// affinity is involved. `Wda` applies `WDA_EXCLUDEFROMCAPTURE` instead -- the
+/// official-style affinity, which on some Windows/DWM/GPU combinations stops the DWM
+/// from presenting the DirectComposition content on screen as well (operator sees the
+/// fake cursor and no pill). `Off` leaves the pill in the frame.
+/// Returns true when the capture is masked and therefore needs a frame composed after
+/// the mask (see the `fresh` field of `CaptureJob`).
+fn exclude_overlays() -> bool {
+    match crate::overlay::capture_exclusion() {
+        crate::overlay::CaptureExclusion::Mask => {
+            return crate::overlay::mask_for_capture();
+        }
+        crate::overlay::CaptureExclusion::Off => return false,
+        crate::overlay::CaptureExclusion::Wda => {}
+    }
     let registered: Vec<isize> = OVERLAY_HWNDS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -488,6 +520,15 @@ fn exclude_overlays() {
     }
     unsafe {
         let _ = EnumWindows(Some(enum_overlay_proc), LPARAM(0));
+    }
+    // The affinity mode composes with the pill still in the frame.
+    false
+}
+
+/// Lift whatever `exclude_overlays()` applied for the frame that has just been taken.
+fn restore_overlays() {
+    if crate::overlay::capture_exclusion() == crate::overlay::CaptureExclusion::Mask {
+        crate::overlay::unmask_after_capture();
     }
 }
 
@@ -745,6 +786,14 @@ fn take_frame(cached: &CachedPool, wait_ms: u32) -> Result<Direct3D11CaptureFram
     bail!("{CAPTURE_TIMEOUT}");
 }
 
+/// A frame that arrived *after* this call. The arrival handler parks the newest frame
+/// it saw, which for a masked capture is the one composed before the pill disappeared;
+/// dropping it is what makes the capture show the masked desktop.
+fn wait_fresh_frame(cached: &CachedPool, timeout_ms: u32) -> Result<Direct3D11CaptureFrame> {
+    let _ = cached.take_latest();
+    take_frame(cached, timeout_ms.clamp(50, 400) as u32)
+}
+
 /// Newest available frame: whatever the arrival handler parked most recently.
 fn wait_frame(cached: &CachedPool, timeout_ms: u32) -> Result<Direct3D11CaptureFrame> {
     let wait_ms = timeout_ms.clamp(50, 400) as u64;
@@ -780,8 +829,8 @@ fn poll_frame(pool: &Direct3D11CaptureFramePool, timeout_ms: u64) -> Option<Dire
     None
 }
 
-fn capture_one(hwnd: isize, timeout_ms: u32) -> Result<CaptureFrame> {
-    match capture_wgc(hwnd, timeout_ms) {
+fn capture_one(hwnd: isize, timeout_ms: u32, fresh: bool) -> Result<CaptureFrame> {
+    match capture_wgc(hwnd, timeout_ms, fresh) {
         Ok(frame) => {
             note_capture_path("wgc");
             Ok(frame)
@@ -833,7 +882,7 @@ fn with_overlay_hidden<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     result
 }
 
-fn capture_wgc(hwnd_raw: isize, timeout_ms: u32) -> Result<CaptureFrame> {
+fn capture_wgc(hwnd_raw: isize, timeout_ms: u32, fresh: bool) -> Result<CaptureFrame> {
     let hwnd = as_hwnd(hwnd_raw);
     if hwnd_raw == 0 || !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
         bail!("window id is required");
@@ -847,7 +896,12 @@ fn capture_wgc(hwnd_raw: isize, timeout_ms: u32) -> Result<CaptureFrame> {
 
     with_cached_pool(hwnd, |cached| {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1) as u64);
-        let frame = wait_frame(cached, timeout_ms).context(CAPTURE_TIMEOUT)?;
+        let frame = if fresh {
+            wait_fresh_frame(cached, timeout_ms)
+        } else {
+            wait_frame(cached, timeout_ms)
+        }
+        .context(CAPTURE_TIMEOUT)?;
         let surface = frame.Surface().context(SEND_CAPTURE)?;
         let jpeg = encode_from_surface(
             &surface,

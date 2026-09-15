@@ -97,22 +97,60 @@
 
 ## 3a. 状态药丸（实机像素验证）
 
-> **重要更正**：曾一度判定「DirectComposition 在本机不呈现」——那是误判。
+> **重要更正（第一次）**：曾一度判定「DirectComposition 在本机不呈现」——那是误判。
 > 真相是 `SetWindowDisplayAffinity` 只能由**拥有该窗口的进程**修改，探针从外部清除
 > 亲和性会静默失败；药丸一直被正确地排除在截图之外（这是**官方设计**：药丸给人看，
 > 不给模型看）。helper 自己跳过排除后才拍到药丸。
+>
+> **重要更正（第二次，2026-09-15 用户实机）**：上面那句「药丸给人看」在本机其实**不成立**。
+> 操作者两次报告「只有假光标、屏幕上看不到药丸」，A/B 实机对照（同一 helper、同一
+> DirectComposition 路径、同一位置，唯一变量是亲和性）：
+>
+> | 捕获排除 | 屏幕顶部正中（用户肉眼） | 截图里 |
+> |---|---|---|
+> | `WDA_EXCLUDEFROMCAPTURE`（旧默认） | **没有药丸** | 没有药丸 |
+> | 不设亲和性 | **有药丸** | 有药丸 |
+>
+> 即：在部分 Windows/DWM/GPU 组合下，给 layered + DirectComposition 的药丸窗口打上
+> `WDA_EXCLUDEFROMCAPTURE` 会让 DWM **连屏幕上都不再合成**它的内容；窗口状态
+> （`IsWindowVisible=true`、`DwmGetWindowAttribute(DWMWA_CLOAKED)=0`、rect 正确、
+> `exStyle=0x80800A8`）全部正常，所以任何只看 API 的检查都发现不了。
+> 更糟的是亲和性**不可逆、且会累计**：`get_window_state` 每次都再打一遍，于是第一次
+> 观察之后药丸对整个会话都不可见。
+>
+> 结论：默认改为**只在该次截图期间隐藏药丸**（合成器把 root opacity 归零 + `DwmFlush` +
+> 丢弃截图前停放的旧帧），亲和性保留为 `overlayCaptureExclusion=wda` 可选模式。
 
 - [x] 药丸在屏幕上真实渲染（DirectComposition 默认路径）：
       `$env:DSH_CU_OVERLAY_CAPTURABLE='1'; node parity/pill-probe.mjs` →
       药丸矩形内 5763 个强调色像素，bbox (1028,14)-(1532,62)，采样值 `51,156,255` = `#339cff`
-- [x] 药丸**默认不出现在模型自己的截图里**（`WDA_EXCLUDEFROMCAPTURE`），只有显式
-      `DSH_CU_OVERLAY_CAPTURABLE=1` 才可被捕获，用于诊断
+- [x] 药丸**默认不出现在模型自己的截图里**，而屏幕上一直在：默认 `overlayCaptureExclusion=mask`
+      （单次截图期间合成器隐藏 + 丢弃旧帧）；`wda` 为可选（官方亲和性，本机会连屏幕上一起消失）；
+      `DSH_CU_OVERLAY_CAPTURABLE=1` 完全关闭排除，供像素诊断使用
 - [x] 文案为 DSH 品牌（D2）：左 `DeepSeek Harness is using your computer`、右 `Esc to cancel`
 - [x] 新版 `UpdateLayeredWindow` **回退渲染器**（`DSH_CU_ULW_OVERLAY=1` 强制启用，
       `attach_display` 失败时自动启用）：同样 5627 个强调色像素，含 1.2s `1.0 → 0.76` 边框脉冲
       （采样 55,140,211 正是 0.76 不透明度叠加桌面背景的结果）
 - [x] 药丸诊断已进 `overlayState`：`displayStep` / `pillLayout` / `pillSprite` /
       `pill{builds,buildFails,pushes,pushFails,paintCalls}` / `pumpPill`
+
+### 3a-2. 生产默认下的「既能看见、又不进截图」门禁（第 15 轮）
+
+> `parity/pill-capture-mask.mjs`（已并入 `verify-all.ps1`）同时测两端：用 `CopyFromScreen`
+> 读**操作者看到的桌面**，用 helper 自己的 `get_window_state` 读**模型会读到的帧**，
+> 并以 `overlayCaptureExclusion=off` 作为对照（证明「帧里没有药丸」不是因为药丸根本没画）。
+
+| 模式 | 屏幕（药丸隐藏时 → 显示时 → 截图之后） | 模型帧里的强调色像素 |
+|---|---|---|
+| `mask`（默认） | 58545 → **97735** → **95116** | 2546 → **2501**（药丸不在帧里） |
+| `off`（对照） | — | 2546 → **31004**（药丸在帧里） |
+
+- [x] 关键坑：合成器把 root opacity 归零之后，**WGC 帧池里停放的仍是遮蔽前那一帧**，
+      直接取最新帧会拿到旧画面。`CaptureJob.fresh` 会先丢弃停放帧再等新帧，门禁因此才成立
+- [x] 卡死保护：遮蔽由 `CaptureMask` 命令成对下达，pump 里另有 5 秒看门狗，
+      `overlayState.captureMasked` / `captureMaskCount` 可诊断
+- [x] 注意：本项目原有的药丸门禁都在 `DSH_CU_OVERLAY_CAPTURABLE=1` 下测量——那个变量会
+      **关掉被验证的行为**（亲和性），正是它让这个缺陷躲过了所有像素门禁
 
 ## 3b. 截图新鲜度（实机发现并修复的严重回归）
 

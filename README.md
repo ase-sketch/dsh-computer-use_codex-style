@@ -47,7 +47,7 @@ English | [中文](README.zh-CN.md)
 |---|---|
 | **The full Codex surface** | All 13 official Codex `window2` methods — `list_windows`, `get_window`, `list_apps`, `launch_app`, `get_window_state`, `click`, `press_key`, `type_text`, `scroll`, `set_value`, `drag`, `perform_secondary_action`, `activate_window` — with the same names, parameters, defaults, return shapes and error strings as Codex. |
 | **Real input, real screenshots** | `SendInput` for input, UI Automation for the accessibility tree, `Windows.Graphics.Capture` for screenshots that work even when the window is occluded. Screenshots arrive as vision image parts, never as base64 inside JSON. |
-| **A visible, cancellable overlay** | A status pill plus an animated synthetic cursor, drawn in a layered window and excluded from capture. **Esc** interrupts the turn at any moment. |
+| **A visible, cancellable overlay** | A status pill plus an animated synthetic cursor. The pill is hidden for the duration of each screenshot, so the model never reads its own status pill back while you keep seeing it. **Esc** interrupts the turn at any moment. |
 | **Verified against the real thing** | Behaviour is gated against the official plugin and its helper: AX tree grammar, overlay pixels, cursor motion, capture freshness, transport budgets, approval strings, turn lifecycle. |
 | **Harness-native, not MCP-shaped** | DSH tools with a bundled skill, not a JavaScript REPL. The plugin is a DSH **bundle**: `package.json` + `cordis.patch.yml` + entry modules at the package root. |
 | **Two planes, one sidecar** | The desktop is process-wide, so the pointer, overlay, capture and approvals live on the HOST plane; the model-facing tools live in an agent preset, so an ordinary coding session never gets the mouse. |
@@ -192,7 +192,7 @@ flowchart TB
 | `click_element`, `scroll_element` | opt-in | Legacy window-v1 aliases |
 | `session_note`, `session_state`, `diagnostic_state`, `end_turn` | diagnostic | Session scratchpad, state dump and turn control |
 
-```computer_use_health` is the fastest way to see what is actually mounted: backend, exposed catalog, approval policy, injected environment names, the documentation gate, the experience layer status, and the overlay diagnostics (which pill renderer is live, how many frames it pushed, whether the system cursor is suppressed).
+`computer_use_health` is the fastest way to see what is actually mounted: backend, exposed catalog, approval policy, injected environment names, the documentation gate, the experience layer status, and the overlay diagnostics (which pill renderer is live, how many frames it pushed, whether the system cursor is suppressed, which capture exclusion is in force and whether a capture currently masks the pill).
 
 ---
 
@@ -290,6 +290,7 @@ The note travels as its own block, so the official payload keeps its exact key s
 | `preserveHelperOnTimeout` | `false` | Keep the helper alive after a timeout for debugging |
 | `allowedApps` | `[]` | Non-empty means only these app ids may be observed or driven |
 | `envAllowlist` | `[]` | Extra environment names forwarded to the helper on top of the shipped allow list |
+| `overlayCaptureExclusion` | `mask` | How the status pill is kept out of the model's screenshots: `mask` hides it in the compositor for the duration of one capture (you keep seeing it), `wda` applies `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` instead, `off` leaves the pill in the frame |
 
 ### Experience layer (`experience.*` on the same row)
 
@@ -416,6 +417,7 @@ docs/                   plugin readmes and assets
 | Focus jumps while the agent works | Expected with `stealFocus: true`: input methods activate their target window. |
 | The desktop is locked | Computer Use stops and asks you to unlock. It never drives `LockApp.exe`. |
 | Two cursors on screen | The overlay draws a synthetic cursor and blanks the system one. If you ever see both, read `diagnostic_state` → `overlayState.systemCursorFailures`: a non-zero count means the suppression failed, which is the only designed path to two pointers. |
+| The status pill never appears | Read `computer_use_health` → `overlay.captureExclusion`. The default `mask` always keeps the pill on screen. The official-style `wda` affinity stops the DWM from presenting the pill's composition content *on screen* on some Windows/DWM/GPU combinations (the operator then sees the synthetic cursor and no pill, while every overlay API still reports `visible=true`); that is why it is opt-in. A stuck mask would show up as `overlay.captureMasked = true`, and the helper lifts one itself after five seconds. |
 | An app has an unusable accessibility tree | Common for self-drawn UIs. Use the screenshot path, or prefer the app own scripting interface, then record what you learned with `computer_use_experience`. |
 
 ---

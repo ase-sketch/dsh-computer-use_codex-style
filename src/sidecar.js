@@ -484,6 +484,13 @@ export class Sidecar {
     if (Number.isFinite(cursorScale) && cursorScale > 0 && cursorScale !== 1) {
       extra.DSH_COMPUTER_USE_CURSOR_SCALE = String(cursorScale)
     }
+    // DSH-only knob: how the pill is kept out of the model's screenshots. Sent on every
+    // spawn, including the default, so the plugin's default and the helper's fallback
+    // cannot drift apart (a mismatch used to mean "the pill is invisible on some GPUs").
+    const exclusion = String(this.config.overlayCaptureExclusion || 'mask')
+    if (['mask', 'wda', 'off'].includes(exclusion)) {
+      extra.DSH_CU_OVERLAY_CAPTURE_EXCLUSION = exclusion
+    }
     const { env, injected, excluded } = sanitizedEnvironment(extra, this.config.envAllowlist)
     const child = spawn(exe, args, {
       cwd: engineRoot,
