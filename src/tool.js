@@ -334,7 +334,21 @@ function healthTool(ctx, state, config, startError) {
         return { ok: false, codexRequired: false, error: startError, ...catalogue }
       }
       const health = await ctx.dshComputerUse.health()
-      return { ...health, ...catalogue }
+      // The overlay's own diagnostics (which pill renderer is live, how many frames it
+      // pushed, whether the pill window exists at all) live on the helper's
+      // diagnostic_state method. Surfacing them here answers "the pill did not appear"
+      // from the documented health call instead of a bespoke probe: the status pill is a
+      // DirectComposition visual tree, so when it is missing nothing in the normal API says
+      // why. The helper may be gone or wedged, so this never fails the health call.
+      let overlay
+      try {
+        const diagnostics = await ctx.dshComputerUse.call('diagnostic_state', {})
+        const payload = diagnostics && diagnostics.value !== undefined ? diagnostics.value : diagnostics
+        overlay = payload && typeof payload === 'object' ? payload.overlayState : undefined
+      } catch {
+        overlay = undefined
+      }
+      return { ...health, ...catalogue, ...(overlay === undefined ? {} : { overlay }) }
     },
     isConcurrencySafe() {
       return true

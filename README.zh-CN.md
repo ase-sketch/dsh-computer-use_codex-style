@@ -192,7 +192,7 @@ flowchart TB
 | `click_element`、`scroll_element` | 需显式开启 | 旧版 window-v1 别名 |
 | `session_note`、`session_state`、`diagnostic_state`、`end_turn` | 诊断 | 会话草稿、状态转储与回合控制 |
 
-想确认到底挂上了什么，最快的办法是 `computer_use_health`：后端、暴露的工具目录、批准策略、注入了哪些环境变量、文档门禁，以及经验层状态。
+想确认到底挂上了什么，最快的办法是 `computer_use_health`：后端、暴露的工具目录、批准策略、注入了哪些环境变量、文档门禁，经验层状态，以及覆盖层诊断（当前用哪条药丸渲染路径、推了多少帧、系统光标是否被压制）。
 
 ---
 

@@ -192,7 +192,7 @@ flowchart TB
 | `click_element`, `scroll_element` | opt-in | Legacy window-v1 aliases |
 | `session_note`, `session_state`, `diagnostic_state`, `end_turn` | diagnostic | Session scratchpad, state dump and turn control |
 
-```computer_use_health` is the fastest way to see what is actually mounted: backend, exposed catalog, approval policy, injected environment names, the documentation gate, and the experience layer status.
+```computer_use_health` is the fastest way to see what is actually mounted: backend, exposed catalog, approval policy, injected environment names, the documentation gate, the experience layer status, and the overlay diagnostics (which pill renderer is live, how many frames it pushed, whether the system cursor is suppressed).
 
 ---
 

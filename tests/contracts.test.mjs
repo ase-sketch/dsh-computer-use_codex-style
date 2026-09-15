@@ -343,6 +343,18 @@ test('APS-11 an interactive session still asks exactly once', async () => {
   assert.equal(asked, 1, 'a normal session must still ask the user once')
 })
 
+test('MCP-02 health surfaces the overlay diagnostics when the helper reports them', async () => {
+  const harness = makeHarness({
+    onCall: name => (name === 'diagnostic_state'
+      ? { ok: true, value: { overlayState: { visible: true, displayComposition: true, pill: { pushes: 3 } } } }
+      : { ok: true, value: {} }),
+  })
+  await applyTools(harness.ctx, ToolConfig({}))
+  const health = await harness.registered.get('computer_use_health').execute({}, { agent: { id: 's' } })
+  assert.equal(health.overlay.displayComposition, true)
+  assert.equal(health.overlay.pill.pushes, 3)
+})
+
 test('PSG-5 requiredFor documentation gate blocks CDP until the reference is read', async () => {
   const harness = makeHarness({ browserTools: [
     { name: 'tab_cdp_call', description: 'cdp', parameters: { type: 'object', properties: {} } },
