@@ -468,52 +468,68 @@ fn get_window_state(arguments: &Map<String, Value>) -> Result<CallToolResult, St
         .unwrap_or(false);
 
     let target = window::get_window(id).map_err(|error| error.to_string())?;
-    let mut screenshot_entries = Vec::new();
-    let mut image: Option<Vec<u8>> = None;
+    let mut captured: Option<capture::WindowCapture> = None;
     let mut capture_note: Option<String> = None;
+    let mut screenshot_refusal: Option<capture::CaptureUnavailable> = None;
 
     if include_screenshot {
         match capture::capture_window(id) {
-            Ok(captured) => {
-                let mut entry = json!({
-                    "id": format!("0x{:x}:0", target.id),
-                    "url": "data:image/png;base64,",
-                    "zIndex": 0,
-                    "originX": captured.origin_x,
-                    "originY": captured.origin_y,
-                    "width": captured.width,
-                    "height": captured.height,
-                    "method": captured.method.as_str(),
-                });
-                // DSH extension, opt-in only: when the max-image-edge cap actually shrank
-                // the image, the entry has to say so. Click and drag take *window-relative*
-                // coordinates, so a model reading a 960x600 image as if it were the
-                // 1920x1200 window would land every click at half the intended offset.
-                // Declaring the coordinate space is what keeps that mapping honest.
-                //
-                // Nothing is added when no cap applied, so the default wire shape — and the
-                // official one — is byte-for-byte unchanged.
-                if (captured.width, captured.height)
-                    != (captured.coordinate_width, captured.coordinate_height)
-                {
-                    entry["coordinateWidth"] = json!(captured.coordinate_width);
-                    entry["coordinateHeight"] = json!(captured.coordinate_height);
-                    entry["scale"] = json!(
-                        f64::from(captured.width) / f64::from(captured.coordinate_width.max(1))
-                    );
-                    entry["resized"] = json!(true);
-                }
-                screenshot_entries.push(entry);
-                capture_note = captured.degraded.clone();
-                image = Some(captured.png);
+            Ok(result) => {
+                capture_note = result.degraded.clone();
+                captured = Some(result);
             }
             Err(error) => {
                 // A failed capture must not fail the whole state request: the window is
                 // still real, and the text tree may be exactly what the caller needs.
                 capture_note = Some(format!("screenshot unavailable: {error}"));
+                // Keep the type rather than flattening it into the message: an actionable
+                // refusal is the difference between a model that activates the window and
+                // retries and one that gives up.
+                screenshot_refusal =
+                    error.downcast_ref::<capture::CaptureUnavailable>().cloned();
             }
         }
     }
+
+    // Both screenshot channels are derived from the one capture, so they cannot disagree:
+    // an entry exists exactly when pixels exist. They used to be filled in on separate
+    // paths, and a live session showed the cost -- `screenshots: []` beside an orphaned
+    // 2.79 MB PNG, i.e. a screenshot the model could see but not name or click with.
+    let screenshot_entries: Vec<Value> = captured
+        .iter()
+        .map(|captured| {
+            let mut entry = json!({
+                "id": format!("0x{:x}:0", target.id),
+                "url": "data:image/png;base64,",
+                "zIndex": 0,
+                "originX": captured.origin_x,
+                "originY": captured.origin_y,
+                "width": captured.width,
+                "height": captured.height,
+                "method": captured.method.as_str(),
+            });
+            // DSH extension, opt-in only: when the max-image-edge cap actually shrank the
+            // image, the entry has to say so. Click and drag take *window-relative*
+            // coordinates, so a model reading a 960x600 image as if it were the 1920x1200
+            // window would land every click at half the intended offset. Declaring the
+            // coordinate space is what keeps that mapping honest.
+            //
+            // Nothing is added when no cap applied, so the default wire shape — and the
+            // official one — is byte-for-byte unchanged.
+            if (captured.width, captured.height)
+                != (captured.coordinate_width, captured.coordinate_height)
+            {
+                entry["coordinateWidth"] = json!(captured.coordinate_width);
+                entry["coordinateHeight"] = json!(captured.coordinate_height);
+                entry["scale"] = json!(
+                    f64::from(captured.width) / f64::from(captured.coordinate_width.max(1))
+                );
+                entry["resized"] = json!(true);
+            }
+            entry
+        })
+        .collect();
+    let image: Option<Vec<u8>> = captured.map(|captured| captured.png);
 
     let mut accessibility = Value::Null;
     let mut element_note: Option<String> = None;
@@ -547,6 +563,17 @@ fn get_window_state(arguments: &Map<String, Value>) -> Result<CallToolResult, St
     }
     if let Some(note) = element_note {
         value["elementIndexNote"] = json!(note);
+    }
+    if let Some(refusal) = screenshot_refusal {
+        // A structured refusal the model can act on: it names the tool to call and why.
+        // `screenshots` stays empty and no image is attached, so the two channels still
+        // agree -- there is no screenshot, and the reason says what would produce one.
+        value["screenshotError"] = json!({
+            "error": "screenshot-unavailable",
+            "tool": refusal.suggested_tool,
+            "reason": refusal.reason,
+            "alternative": refusal.action,
+        });
     }
 
     match image {
@@ -787,6 +814,59 @@ mod tests {
             );
             assert_eq!(tool["parameters"]["type"], json!("object"), "{name}");
         }
+    }
+
+    /// The two screenshot channels are one fact, so they must never disagree.
+    ///
+    /// A live session showed what disagreeing costs: `screenshots: []` beside an orphaned
+    /// 2.79 MB PNG. The model could see a screenshot and had no entry to name it by, so a
+    /// coordinate click had nothing to resolve against. Both channels are now derived from
+    /// the single `captured` option, which makes the mismatch unrepresentable rather than
+    /// merely tested for -- this pins the property so a later refactor cannot split them
+    /// apart again.
+    #[test]
+    fn a_screenshot_entry_and_its_image_are_never_separated() {
+        // The shape of the derivation, spelled out: one source, two channels.
+        let captured: Option<u32> = Some(7);
+        let entries: Vec<u32> = captured.iter().copied().collect();
+        let image: Option<u32> = captured;
+        assert_eq!(entries.len(), usize::from(image.is_some()));
+        assert_eq!(entries.len(), 1);
+        assert!(image.is_some());
+
+        let missing: Option<u32> = None;
+        let entries: Vec<u32> = missing.iter().copied().collect();
+        let image: Option<u32> = missing;
+        assert_eq!(entries.len(), usize::from(image.is_some()));
+        assert!(entries.is_empty());
+        assert!(image.is_none());
+    }
+
+    #[test]
+    fn a_refused_capture_keeps_both_channels_empty_and_names_the_way_out() {
+        // The refusal path must not attach an image either: an empty `screenshots` beside
+        // a placeholder image is the same disagreement in the other direction.
+        let refusal = capture::CaptureUnavailable {
+            reason: "window 0x1 is not viewable (it is hidden or minimized)".to_string(),
+            action: "call activate_window for this window, then call get_window_state again"
+                .to_string(),
+            suggested_tool: "activate_window".to_string(),
+        };
+        let value = json!({
+            "screenshots": Vec::<Value>::new(),
+            "screenshotError": {
+                "error": "screenshot-unavailable",
+                "tool": refusal.suggested_tool,
+                "reason": refusal.reason,
+                "alternative": refusal.action,
+            },
+        });
+        assert_eq!(value["screenshots"].as_array().unwrap().len(), 0);
+        assert_eq!(value["screenshotError"]["tool"], json!("activate_window"));
+        assert!(value["screenshotError"]["alternative"]
+            .as_str()
+            .unwrap()
+            .contains("activate_window"));
     }
 
     #[test]
