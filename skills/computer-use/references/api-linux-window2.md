@@ -176,6 +176,38 @@ Linux desktop environments vary between X11 and Wayland. `helper-linux` uses a t
 
 ---
 
+## Name Collisions Between the Two Surfaces
+
+Five method names exist on **both** Linux surfaces and mean different things:
+`list_apps`, `click`, `press_key`, `type_text`, `scroll`.
+
+* On the window2 surface each acts on an explicit `Window { id, app, title }`, plus
+  `element_index` where an accessibility element is addressed; `scroll` takes
+  `x`/`y`/`scrollX`/`scrollY`.
+* On the P1 `sky.window` surface they take the crate's own shape (an `app` string,
+  absolute `x`/`y`, a P1 `direction`/`pages` scroll), which is what a P1 host sends.
+
+Because a name alone cannot say which handler to use, a window2 turn tags the `call`
+request with `surface` (a plain request parameter, not a new protocol method):
+
+```jsonc
+// window2 turn: reaches the native X11 window2 handler
+{"id":1,"method":"call","params":{"name":"click","surface":"computer",
+  "arguments":{"window":{"id":2097164,"app":"XTerm"},"element_index":3}}}
+
+// P1 turn: no surface tag, keeps the sky.window handler and parameter shape
+{"id":2,"method":"call","params":{"name":"click",
+  "arguments":{"app":"linux-window:101","x":250,"y":350}}}
+```
+
+The eight window2-only methods (`list_windows`, `get_window`, `launch_app`,
+`get_window_state`, `set_value`, `drag`, `perform_secondary_action`, `activate_window`)
+have no P1 handler and always reach the window2 dispatcher, tagged or not.
+An untagged `call` is therefore bit-for-bit the P1 behaviour it always was: an existing
+P1 caller needs no change.
+
+---
+
 ## Element Index Scoping and Stability
 
 1. **Observation-bound Lifetime**:

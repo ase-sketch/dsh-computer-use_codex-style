@@ -8,11 +8,13 @@
 
 ```text
 scripts/x11-headless/
-├── README.md        # 本说明文档
-├── session.sh       # 核心会话管理器：负责 Xvfb / WM 生命周期、环境变量与退出清理
-├── run-smoke.sh     # 一键冒烟测试运行器：自检/编译二进制、起会话、驱动 7 工具、出报告
-├── driver.py        # stdio JSONL 协议驱动器：覆盖 health/tools/prompt/拒绝/7 工具/生命周期
-└── summary.py       # 结果分析与汇总器：验证协议契约，输出终端报表与机器可读 JSON 摘要
+├── README.md              # 本说明文档
+├── session.sh             # 核心会话管理器：负责 Xvfb / WM 生命周期、环境变量与退出清理
+├── run-smoke.sh           # P1 一键冒烟运行器：自检/编译二进制、起会话、驱动 7 工具、出报告
+├── driver.py              # P1 stdio JSONL 驱动器：覆盖 health/tools/prompt/拒绝/7 工具/生命周期
+├── summary.py             # 结果分析与汇总器：验证协议契约，输出终端报表与机器可读 JSON 摘要
+├── run-window2-e2e.sh     # P2 全表面端到端运行器：起会话 + 起 xterm，驱动 window2 13 方法
+└── window2_driver.py      # P2 window2 驱动器：13 方法逐一调用 + 原生截图路径与 PNG 校验
 ```
 
 ---
@@ -31,7 +33,29 @@ scripts/x11-headless/
 5. 生成控制台彩报及结构化 JSON 摘要：`artifacts/x11-smoke-summary.json`；
 6. 自动回收并杀灭所有 Xvfb、WM、子进程，确保 0 孤儿进程残留。
 
-### 2.2 使用 `session.sh` 运行自定义命令
+### 2.2 运行 window2 全表面端到端测试（P2）
+```bash
+./scripts/x11-headless/run-window2-e2e.sh
+```
+与 `run-smoke.sh` 互补：冒烟测试覆盖 P1 `sky.window` 表面（7 工具），此脚本覆盖官方 window2 表面
+（13 方法）。它在同一虚拟屏上另起一个 `xterm` 作为被测窗口，然后断言 Xvfb 下**可以**证实的性质：
+
+1. `tools` 在 `surface=computer` 上恰好广告官方 13 个方法；
+2. `list_windows` 枚举到 xterm，句柄为数值型稳定值，`get_window` / `list_apps` 与之自洽；
+3. **截图必须走 X11 原生路径**：`get_window_state` 报告的 `method` 为 `composite` 或 `direct`，
+   **不能**是 `xdg-desktop-portal`。这是本检查存在的原因——portal 会截到真机桌面而非 Xvfb 屏，
+   本机表现为「截图看似成功但内容是错的」；
+4. 图像以独立 image part 返回合法 PNG，解码尺寸与声明的窗口尺寸一致，且 JSON `value` 内不夹带
+   base64 像素（只保留空 data-URL 占位）；
+5. 窗口相对点击**确实送达**：由驱动自行 map 的探针窗（`list_windows` 可枚举）收到真实
+   `ButtonPress`，事件坐标即请求的窗口相对坐标；对 xterm 另以服务端指针位移验证平移量；
+6. 其余方法均由 window2 分发器应答，包括 X11 下合法拒绝的 `launch_app` / `set_value` /
+   `perform_secondary_action`（拒绝文本是 window2 的，而非 P1 守卫的 `unsupported method`）；
+7. call-surface 契约：带 surface 的同名方法走原生 handler，不带 surface 的保持 P1 行为。
+
+产物：`parity/x11/artifacts/x11-window2-e2e-summary.json`（含逐项结果与 `residual_risks`）。
+
+### 2.3 使用 `session.sh` 运行自定义命令
 可以在虚拟 X11 会话内直接运行任何图形或协议测试命令：
 ```bash
 # 启动会话并查看 X11 显示信息
@@ -56,6 +80,7 @@ XVFB_DISPLAY=101 XVFB_RES=1920x1080x24 ./scripts/x11-headless/session.sh xdpyinf
 | `XVFB_RES` | `1280x800x24` | 分辨率与色深 |
 | `XVFB_TIMEOUT` | `10` | 等待 Xvfb 启动就绪的最大超时秒数 |
 | `SMOKE_ARTIFACTS_DIR` | `<repo>/parity/x11/artifacts` | 冒烟输出文件目录 |
+| `WINDOW2_E2E_ARTIFACTS_DIR` | `<repo>/parity/x11/artifacts` | window2 端到端输出文件目录 |
 
 ---
 
