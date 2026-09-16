@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-09-16T13:06:55.514742+00:00",
+  "timestamp": "2026-09-16T13:07:54.841317+00:00",
   "status": "PASS",
   "environment": {
     "display": ":99",
@@ -34,7 +34,7 @@
   "tools_7_status": {
     "list_apps": {
       "ok": true,
-      "apps_count": 39,
+      "apps_count": 43,
       "accessible_apps_count": 13,
       "accessibility_error": null
     },
@@ -50,12 +50,12 @@
     "screenshot": {
       "ok": true,
       "source": "xdg-desktop-portal",
-      "width": 1920,
-      "height": 1200,
-      "bytes": 1362016,
+      "width": 1437,
+      "height": 897,
+      "bytes": 1688662,
       "format": "png",
       "has_image": true,
-      "base64_chars": 1816024
+      "base64_chars": 2251552
     },
     "click": {
       "ok": true,
