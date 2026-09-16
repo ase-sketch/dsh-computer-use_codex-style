@@ -70,7 +70,7 @@ export function captureLimits(maxImageEdge, engineRoot) {
 export const Config = Schema.object({
   pythonPath: Schema.string().default(''),
   engineRoot: Schema.string().default(''),
-  backend: Schema.union(['windows', 'live', 'fake', 'helper']).default('windows'),
+  backend: Schema.union(['windows', 'linux', 'live', 'fake', 'helper']).default('windows'),
   /**
    * Default tool surface. `computer` is the official 13-method whitelist; the
    * `gated` fallback used to hand the model the whole 18-row table (TC-01).
