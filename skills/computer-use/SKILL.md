@@ -1,12 +1,13 @@
 ---
 name: computer-use
-description: Drive Windows desktop apps from DeepSeek Harness with Codex-parity window2 tools. Use for clicking, typing, screenshots, and native UI automation. For Chromium tabs, load computer-use-browser first.
+description: Drive Windows and Linux desktop apps from DeepSeek Harness with native UI automation tools. Use for clicking, typing, screenshots, and desktop app interaction. For Chromium tabs, load computer-use-browser first.
 ---
 
 # Computer Use
 
-Use this skill to automate the UI of Microsoft Windows apps. It uses SendInput, UI Automation, and
-Windows.Graphics.Capture screenshots that work even when windows are occluded.
+Use this skill to automate the UI of desktop apps across Microsoft Windows and Linux.
+On Windows, it uses SendInput, UI Automation, and Windows.Graphics.Capture (window2 13-tool surface).
+On Linux (P1), it uses `helper-linux` exposing the 7-tool sky.window surface (via XDG Desktop Portal and AT-SPI).
 
 If these tools are available, read this entire `SKILL.md` once before Windows automation work, before
 saying Computer Use is unavailable, and before falling back to other Windows automation.
@@ -16,12 +17,25 @@ need the topic they cover:
 
 - `references/guidance.md`: core runtime behaviour, target-window workflow, screenshot handling, and
   recovery guidance. You MUST read this before controlling Windows apps.
-- `references/api.md`: the full tool surface with every parameter, default and doc comment. Read this when
-  you need a signature or an object shape.
+- `references/api.md`: the Windows window2 13-tool surface with every parameter, default, and doc comment.
+- `references/api-linux.md`: the Linux P1 sky.window 7-tool surface (`list_apps`, `get_app_state`, `screenshot`, `click`, `scroll`, `press_key`, `type_text`) with string-based `app` and `linux-window:<id>` targeting.
 - `references/confirmations.md`: you MUST read this before deciding whether a Windows UI action needs
   confirmation.
 - `references/dsh-header.md`: the session contract and the non-negotiable Windows Automation Safety block
   (also always in your system prompt).
+
+## Linux Platform Surface (P1 sky.window)
+
+When running on Linux, Computer Use operates via `helper-linux`. It provides a focused **7-tool surface**:
+`list_apps`, `get_app_state`, `screenshot`, `click`, `scroll`, `press_key`, `type_text`.
+
+Key characteristics on Linux:
+1. **Targeting by identifier**: Tools accept `app` as either a canonical application identifier (e.g. `"firefox"`, `"gedit"`) or a specific window target formatted as `"linux-window:<id>"`.
+2. **Coordinate-based input (no element_index)**: All click and scroll actions operate on window-relative coordinates `{ x, y }`. Accessibility element indexes (`element_index`), `drag`, and direct `set_value` are Windows window2 capabilities not present in Linux P1.
+3. **Session permissions (Portal)**: Under Wayland, the first call to `screenshot` or input tools will display an OS-level XDG Desktop Portal permission prompt. The user must grant screen capture / remote desktop access.
+4. **AT-SPI accessibility**: `get_app_state` reads AT-SPI accessibility trees. If disabled in the desktop session, `text` will be omitted or empty, and actions should rely on visual screenshots.
+
+For full type definitions and examples, see `references/api-linux.md`.
 
 ## If the tools are missing
 
