@@ -22,6 +22,7 @@ license        MIT (see LICENSE, copied from the upstream repository)
 | `src/protocol.rs` | the JSONL request/response envelope, and the split of a screenshot into its own image part |
 | `src/helper.rs` | the dispatcher: `health` / `tools` / `call` / `interrupt` / `shutdown` / `prompt` / `end_turn`, and the seven-tool surface |
 | `src/server.rs` | upstream MCP server, unchanged in its handlers; the fork only adds the two hooks the dispatcher drives |
+| `src/x11/` | the native X11 window2 backend: EWMH enumeration, SHM/XComposite capture, XTest input, AT-SPI element indexes |
 | `src/main.rs` | entry point: no arguments (or `helper`) speaks JSONL, `mcp` keeps the original MCP server, the rest are upstream diagnostics subcommands |
 | `scripts/smoke-jsonl.sh` | protocol-level smoke test; `scripts/smoke_assert.py` holds its assertions |
 | `gnome-shell-extension/` | upstream optional window-targeting extension |
@@ -33,6 +34,36 @@ cargo build --release            # -> target/release/dsh-computer-use
 cargo test                       # upstream suite plus the protocol tests
 bash scripts/smoke-jsonl.sh      # drives the built binary over a pipe
 ```
+
+The X11 window2 backend is pure Rust through `x11rb` and needs **no** X11 development
+package: `x11rb`'s default features never link libxcb, and SHM/XTest/XFixes/XComposite come
+from `x11rb-protocol`'s wire definitions. There is no `pkg-config` step and no system X
+library at build time.
+
+### Integration tests
+
+`tests/xvfb_window2.rs` drives the backend against a real X server that the test binary
+starts and stops itself. They are ignored by default because they need `Xvfb`:
+
+```sh
+DSH_CUA_XVFB_TEST=1 cargo test --test xvfb_window2 -- --ignored --test-threads=1
+```
+
+Without the environment variable the whole file is skipped, so `cargo test` stays green on
+a machine with no X server. The tests use their own displays (`:98`-`:106`) and never
+touch the `DISPLAY` the developer is working in.
+
+Three cases are marked ignored for a reason that is more than "needs Xvfb":
+
+- **EWMH activation** and **window-manager frame extents** need a running window manager.
+  None is installed here, so the no-WM path is what is verified.
+- **Element indexes end to end** need a real toolkit app registered on an accessibility bus;
+  the Xvfb fixture is a raw X window with no accessibility tree. The index cache's own
+  behaviour is covered by unit tests in `src/x11/element.rs`.
+- **A redirection owned by another client** (what a running compositor looks like) cannot be
+  reproduced on Xvfb, which does not enforce cross-client redirection ownership. The fallback
+  is covered deterministically by a unit test in `src/x11/capture.rs`; the real-session case
+  stays unverified until it is run on a session with a compositor.
 
 ## Protocol
 
@@ -75,6 +106,53 @@ by `tools` nor routable through `call`.
 `get_app_state` accepts `app_name_or_bundle_identifier` as well as the window selectors
 (`window_id`, `pid`, `app_id`, `wm_class`, `title`); `window_id` is the numeric window id from
 `list_apps`, so no separate `linux-window:<id>` string form is needed.
+
+### window2 surface (X11)
+
+When `tools` is asked with `surface: "window2"` (or `computer`), the helper answers with the
+official 13-method window2 table instead: `list_windows`, `get_window`, `list_apps`,
+`launch_app`, `get_window_state`, `click`, `press_key`, `type_text`, `scroll`, `set_value`,
+`drag`, `perform_secondary_action`, `activate_window`. The seven sky.window tools above are
+unchanged and stay reachable; where a name exists on both surfaces it keeps its original
+sky.window handler, because the host tags only `tools` with a surface, never `call`.
+
+The window2 backend is native X11 (`src/x11/`), not the `wmctrl`+`xprop` window backend: it
+talks to the server directly through `x11rb`, so it needs no external binaries.
+
+- **Window handles** are X window ids (an opaque XID widened to `u64`). They are stable for as
+  long as the window exists, which is what `get_window` promises. Windows are enumerated from
+  `_NET_CLIENT_LIST` when a window manager is running and from the root window tree otherwise;
+  the fallback skips children with neither `WM_CLASS` nor a title, which have nothing a caller
+  could act on.
+- **Input** goes through XTest. Every window2 coordinate is window-relative, so each call
+  translates it to root coordinates with `translate_coordinates` (which already accounts for a
+  reparenting window manager). `press_key` and `type_text` focus the target window first.
+- **Capture** uses `ShmGetImage` on the window drawable, preferring an XComposite redirect so the
+  image is the window's own pixels rather than whatever overlaps it. See the accuracy note below.
+- **Element indexes** come from AT-SPI and are valid only against the tree of the
+  `get_window_state` call that produced them. An index used without a snapshot, or one outside
+  the captured tree, is refused with a message saying to re-observe rather than being resolved
+  against a tree the caller never saw.
+- **`launch_app` is refused**, structurally and by design: X11 has no application registry to
+  resolve an app id against, and executing a caller-supplied string as a program would be an
+  injection hole. The refusal names the method, the reason and what to do instead.
+
+#### Accuracy note: occlusion and capture
+
+`get_window_state` captures the window's **own pixels** and never an overlapping window's. It
+does **not** deliver live pixels of a window that is completely covered and not painting: each
+capture redirects the window afresh, and a fresh off-screen buffer starts at the window's
+background, so such a window yields its background rather than its last painted content.
+Content painted while the redirection is in effect is captured, even under an opaque cover.
+
+Windows' DWM keeps a backing bitmap per window and can do better in both cases; plain X11
+cannot. `health.window2.occlusionNote` states this, and `get_window_state` reports `degraded`
+whenever it had to fall back to a direct read (a missing Composite extension, or a compositor
+that already owns the window's redirection).
+
+All of this is verified in this repository under Xvfb, without a window manager; the
+compositor-conflict and window-manager cases are listed as unverified in the integration-test
+section above, not asserted.
 
 ## Environment notes
 

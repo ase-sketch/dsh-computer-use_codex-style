@@ -309,7 +309,7 @@ async fn run_interruptible(
 ) -> Vec<Value> {
     let scope = Arc::clone(state);
     // `params` carries the `call` envelope: the tool name and its arguments.
-    let name = params
+    let tool_name = params
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or_default()
@@ -318,20 +318,31 @@ async fn run_interruptible(
         Some(Value::Object(map)) => map.clone(),
         _ => Map::new(),
     };
-    if let Some(refusal) = surface_guard(&call_id, &name) {
+    if let Some(refusal) = surface_guard(&call_id, &tool_name) {
         return vec![refusal];
     }
-    let call = service.invoke_surface_tool(&name, arguments, budget_ms);
+    // The window2 surface has its own dispatcher: its handlers must not go through the
+    // crate's MCP router, which knows nothing about window-relative coordinates.
+    if is_window2_native_call(&tool_name) {
+        let dispatched = tool_name.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            crate::x11::window2::dispatch(&dispatched, arguments)
+        })
+        .await
+        .unwrap_or_else(|error| Err(format!("the window2 worker did not finish: {error}")));
+        return vec![pack_outcome(call_id, &tool_name, outcome)];
+    }
+    let call = service.invoke_surface_tool(&tool_name, arguments, budget_ms);
     tokio::pin!(call);
 
     loop {
         tokio::select! {
-            result = &mut call => return vec![pack_outcome(call_id, &name, result)],
+            result = &mut call => return vec![pack_outcome(call_id, &tool_name, result)],
             item = rx.recv() => {
                 let Some(item) = item else {
                     // The host closed the stream: let the call finish so its result is not lost.
                     let result = call.await;
-                    return vec![pack_outcome(call_id, &name, result)];
+                    return vec![pack_outcome(call_id, &tool_name, result)];
                 };
                 let request = match item {
                     Request::Malformed { .. } => {
@@ -410,9 +421,12 @@ async fn write_line<W: AsyncWrite + Unpin>(writer: &mut W, value: &Value) -> any
     Ok(())
 }
 
-/// Last line of defence for the tool surface: a name that is not one of the seven is
+/// Last line of defence for the tool surface: a name that is on neither surface is
 /// refused with the same wording as an unknown method, so the host cannot tell an
 /// unadvertised native tool from a name that never existed.
+///
+/// The window2 names are admitted here because they are served by a different
+/// dispatcher (`crate::x11::window2`); `call` routes them before this guard runs.
 fn surface_guard(id: &Value, name: &str) -> Option<Value> {
     if name.is_empty() {
         return Some(protocol::err(
@@ -420,13 +434,46 @@ fn surface_guard(id: &Value, name: &str) -> Option<Value> {
             "call requires a tool name",
         ));
     }
-    if !SURFACE_TOOLS.contains(&name) {
+    if !is_surface_tool(name) {
         return Some(protocol::err(
             id.clone(),
             format!("{}{}", protocol::UNSUPPORTED_METHOD_PREFIX, name),
         ));
     }
     None
+}
+
+/// Whether a `call` name is served by one of the two surfaces.
+fn is_surface_tool(name: &str) -> bool {
+    SURFACE_TOOLS.contains(&name) || crate::x11::window2::WINDOW2_TOOLS.contains(&name)
+}
+
+/// Whether this name has to be sent to the native window2 dispatcher.
+///
+/// The seven sky.window tools keep their P1 handlers even where a window2 method shares
+/// the name: the sidecar does not tag `call` requests with a surface (only `tools` is
+/// tagged, see `src/sidecar.js`), so a name carried by both must resolve the same way it
+/// did before window2 existed. The window2-only names are the eight the P1 surface does
+/// not define, and those are routed natively because the crate's MCP router has no
+/// window-relative coordinate handling.
+fn is_window2_native_call(name: &str) -> bool {
+    crate::x11::window2::WINDOW2_TOOLS.contains(&name) && !SURFACE_TOOLS.contains(&name)
+}
+
+/// Which surface a `tools`/`health` request is asking about.
+///
+/// The JS sidecar sends `surface` as an ordinary request parameter
+/// (`src/sidecar.js`, `listTools`), so the helper reads it rather than inventing a
+/// second protocol field. `window2` and `computer` are the same surface under the two
+/// names the host uses.
+fn requested_surface(params: &Map<String, Value>) -> String {
+    protocol::json_str(params, "surface")
+        .unwrap_or_else(|| "sky.window".to_string())
+        .to_ascii_lowercase()
+}
+
+fn is_window2_surface(surface: &str) -> bool {
+    matches!(surface, "window2" | "computer" | "windows" | "all")
 }
 
 /// The sidecar verbs, plus the always-available health/tools/prompt reads.
@@ -437,8 +484,8 @@ async fn dispatch_verb(
     params: &Map<String, Value>,
 ) -> (Result<Value, String>, bool) {
     match method {
-        "health" => (Ok(health_payload(service, state).await), false),
-        "tools" => (Ok(tools_payload(service)), false),
+        "health" => (Ok(health_payload(service, state, params).await), false),
+        "tools" => (Ok(tools_payload(service, params)), false),
         "prompt" => (
             Ok(json!({
                 "prompt": API_PROMPT,
@@ -484,7 +531,20 @@ async fn dispatch_verb(
 }
 
 /// tools: the seven exposed tools with the crate's own JSON Schemas.
-fn tools_payload(service: &ComputerUseLinux) -> Value {
+fn tools_payload(service: &ComputerUseLinux, params: &Map<String, Value>) -> Value {
+    let surface = requested_surface(params);
+    if is_window2_surface(&surface) {
+        // The window2 surface is served by the native X11 backend, so its schemas come
+        // from there rather than from the crate's own MCP table.
+        return json!({
+            "tools": crate::x11::window2::tool_definitions(),
+            "surface": if surface == "all" { "all" } else { "window2" },
+            "hidden": {
+                "note": "Linux window2 exposes the official 13 methods on the native X11 backend; the seven sky.window tools are also available.",
+                "skyWindowTools": SURFACE_TOOLS,
+            },
+        });
+    }
     let definitions = service.tool_definitions();
     let tools: Vec<Value> = SURFACE_TOOLS
         .iter()
@@ -513,7 +573,11 @@ fn tools_payload(service: &ComputerUseLinux) -> Value {
 /// doctor_report probes, and failed checks are surfaced verbatim in degraded so a
 /// blocked screenshot (for example a missing desktop portal backend) is reported
 /// honestly instead of being claimed as working.
-async fn health_payload(service: &ComputerUseLinux, state: &Arc<HelperState>) -> Value {
+async fn health_payload(
+    service: &ComputerUseLinux,
+    state: &Arc<HelperState>,
+    params: &Map<String, Value>,
+) -> Value {
     let diagnostics = match tokio::task::spawn_blocking(crate::diagnostics::doctor_report).await {
         Ok(report) => Some(report),
         Err(_) => None,
@@ -553,11 +617,15 @@ async fn health_payload(service: &ComputerUseLinux, state: &Arc<HelperState>) ->
         input = serde_json::to_value(&report.input).unwrap_or(Value::Null);
     }
 
+    let surface = requested_surface(params);
+    let window2 = window2_health().await;
     json!({
         "ok": true,
         "helper": "dsh-computer-use",
         "helperFlavor": "linux-jsonl",
-        "surface": "sky.window",
+        "surface": if is_window2_surface(&surface) { "window2" } else { "sky.window" },
+        "surfaces": ["sky.window", "window2"],
+        "window2": window2,
         "protocol": "stdio-jsonl",
         "methods": HELPER_METHODS,
         "tools": SURFACE_TOOLS,
@@ -579,6 +647,105 @@ async fn health_payload(service: &ComputerUseLinux, state: &Arc<HelperState>) ->
         "degraded": degraded,
         "interrupted": state.is_interrupted(),
     })
+}
+
+/// What the native X11 window2 backend can actually do here.
+///
+/// Every capability is probed, never assumed. The X11 backend is reported as degraded
+/// (with the reason and the method names it affects) rather than silently absent, and
+/// "composite capture" is listed separately from plain capture because they do not
+/// guarantee the same thing: only the composite path is occlusion-proof, and on a
+/// session with a running compositor it may be unavailable altogether.
+async fn window2_health() -> Value {
+    let connected = tokio::task::spawn_blocking(crate::x11::connection::capabilities).await;
+    let capabilities = match connected {
+        Ok(Ok(capabilities)) => capabilities,
+        Ok(Err(error)) => {
+            return json!({
+                "available": false,
+                "backend": crate::x11::X11_NATIVE_BACKEND,
+                "methods": [],
+                "degraded": [format!("the X11 window2 surface is unavailable: {error}")],
+            });
+        }
+        Err(error) => {
+            return json!({
+                "available": false,
+                "backend": crate::x11::X11_NATIVE_BACKEND,
+                "methods": [],
+                "degraded": [format!("the X11 capability probe did not finish: {error}")],
+            });
+        }
+    };
+
+    let mut degraded = capabilities.detail.clone();
+    let mut methods: Vec<&str> = Vec::new();
+    let mut refused: Vec<Value> = Vec::new();
+
+    methods.push("list_windows");
+    methods.push("get_window");
+    methods.push("list_apps");
+    methods.push("activate_window");
+    if capabilities.xtest.is_some() {
+        methods.extend(["click", "press_key", "type_text", "scroll", "drag"]);
+    } else {
+        degraded.push(
+            "XTest is missing, so click/press_key/type_text/scroll/drag cannot inject input"
+                .to_string(),
+        );
+    }
+    methods.push("get_window_state");
+    if capabilities.composite.is_none() {
+        degraded.push(
+            "XComposite is missing, so get_window_state falls back to a direct window read and              occluding windows may appear in the screenshot"
+                .to_string(),
+        );
+    }
+    if capabilities.window_manager.is_none() {
+        degraded.push(
+            "no EWMH window manager is running (no _NET_SUPPORTING_WM_CHECK), so windows are              enumerated from the root tree and raise/focus requests fall back to map + restack"
+                .to_string(),
+        );
+    }
+    if capabilities.shm.is_none() {
+        degraded.push(
+            "MIT-SHM is missing, so captures go through a slower synchronous GetImage".to_string(),
+        );
+    }
+
+    // launch_app is refused by design, not by environment: X11 has no application
+    // registry to resolve an app id against.
+    refused.push(json!({
+        "method": "launch_app",
+        "reason": "an app id cannot be resolved to a program without the desktop shell's application registry",
+        "alternative": "start the application yourself, then select its window from list_windows()",
+    }));
+
+    json!({
+        "available": true,
+        "backend": crate::x11::X11_NATIVE_BACKEND,
+        "screen": { "width": capabilities_screen().0, "height": capabilities_screen().1 },
+        "extensions": {
+            "shm": capabilities.shm.map(|(major, minor)| format!("{major}.{minor}")),
+            "xtest": capabilities.xtest.map(|(major, minor)| format!("{major}.{minor}")),
+            "xfixes": capabilities.xfixes.map(|(major, minor)| format!("{major}.{minor}")),
+            "composite": capabilities.composite.map(|(major, minor)| format!("{major}.{minor}")),
+        },
+        "windowManager": capabilities.window_manager.map(|window| format!("0x{window:x}")),
+        "methods": methods,
+        "refused": refused,
+        "degraded": degraded,
+        // Stated plainly because it is the one place this backend cannot match the
+        // Windows helper: DWM keeps a full backing bitmap per window, plain X11 does
+        // not, so a fully obscured window that has not repainted yields its last
+        // painted content rather than live pixels.
+        "occlusionNote": "composite capture returns the window's own pixels; a window that is                           fully obscured and has not repainted yields its last painted content,                           which is weaker than the Windows DWM guarantee",
+    })
+}
+
+fn capabilities_screen() -> (u16, u16) {
+    crate::x11::connection::with_connection(|connection| connection.screen_size())
+        .unwrap_or((0, 0))
 }
 
 /// Walk a serialized report and name every failed check as path: detail.
@@ -649,7 +816,7 @@ mod tests {
             "{\"id\":1,\"method\":\"health\",\"params\":{},\"meta\":{}}\n",
             "{\"id\":2,\"method\":\"tools\",\"params\":{},\"meta\":{}}\n",
             "{\"id\":3,\"method\":\"nope\",\"params\":{},\"meta\":{}}\n",
-            "{\"id\":4,\"method\":\"call\",\"params\":{\"name\":\"drag\"},\"meta\":{}}\n",
+            "{\"id\":4,\"method\":\"call\",\"params\":{\"name\":\"move_window\"},\"meta\":{}}\n",
             "{\"id\":5,\"method\":\"shutdown\",\"params\":{},\"meta\":{}}\n",
         ))
         .await;
@@ -669,12 +836,16 @@ mod tests {
         // An unadvertised native tool is refused on its own merits. It must NOT be
         // retroactively cancelled by a shutdown the host sent afterwards: a request is
         // judged against the state at its own point in the stream.
+        //
+        // move_window is the example because it is a real crate tool that no surface
+        // advertises: neither one of the seven sky.window tools nor one of the thirteen
+        // window2 methods. (drag used to serve here, but window2 now exposes it.)
         let fourth = out
             .lines()
             .find(|line| line.contains("\"id\":4"))
             .expect("id 4 must be answered");
         assert!(
-            fourth.contains("unsupported method: drag"),
+            fourth.contains("unsupported method: move_window"),
             "id 4 was answered with {fourth}"
         );
         assert!(!fourth.contains("shutting down"), "shutdown reached back in time");
@@ -822,7 +993,7 @@ mod tests {
     async fn health_reports_capabilities_and_never_invents_success() {
         let service = ComputerUseLinux::default();
         let state = Arc::new(HelperState::default());
-        let health = health_payload(&service, &state).await;
+        let health = health_payload(&service, &state, &Map::new()).await;
         assert_eq!(health["ok"], json!(true));
         assert_eq!(health["helper"], json!("dsh-computer-use"));
         assert_eq!(health["surface"], json!("sky.window"));
@@ -837,7 +1008,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn tools_lists_only_the_seven_with_real_schemas() {
         let service = ComputerUseLinux::default();
-        let payload = tools_payload(&service);
+        let payload = tools_payload(&service, &Map::new());
         let tools = payload["tools"].as_array().unwrap();
         let names: Vec<&str> = tools
             .iter()
@@ -860,9 +1031,12 @@ mod tests {
     fn an_unadvertised_native_tool_is_refused_like_an_unknown_method() {
         // The guard is what makes the surface closed: neither a native tool that exists in
         // this crate nor a name that never existed may reach a handler.
-        let response = surface_guard(&json!(5), "drag").expect("drag must be refused");
+        //
+        // move_window stays the example because it is a real crate tool advertised by
+        // neither surface; drag is no longer usable as one since window2 exposes it.
+        let response = surface_guard(&json!(5), "move_window").expect("move_window must be refused");
         assert_eq!(response["ok"], json!(false));
-        assert_eq!(response["error"], json!("unsupported method: drag"));
+        assert_eq!(response["error"], json!("unsupported method: move_window"));
         assert_eq!(response["id"], json!(5));
 
         let unknown = surface_guard(&json!(6), "nope_not_a_tool").expect("unknown must be refused");
@@ -873,6 +1047,38 @@ mod tests {
 
         for allowed in SURFACE_TOOLS {
             assert!(surface_guard(&json!(1), allowed).is_none(), "{allowed} must pass the guard");
+        }
+        // Every window2 method must also pass the guard: it is a second surface, not a
+        // hole in the first one.
+        for allowed in crate::x11::window2::WINDOW2_TOOLS {
+            assert!(
+                surface_guard(&json!(1), allowed).is_none(),
+                "{allowed} must pass the guard"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_on_both_surfaces_keeps_its_sky_window_handler() {
+        // The sidecar tags only the tools method with a surface, never call, so a shared
+        // name has to resolve the way it did before window2 existed. Only the names the
+        // P1 surface does not define are rerouted to the native dispatcher.
+        let shared: Vec<&str> = crate::x11::window2::WINDOW2_TOOLS
+            .iter()
+            .copied()
+            .filter(|name| SURFACE_TOOLS.contains(name))
+            .collect();
+        assert_eq!(shared.len(), 5, "expected the five shared names");
+        for name in &shared {
+            assert!(!is_window2_native_call(name), "{name} must keep the sky.window handler");
+        }
+        for name in crate::x11::window2::WINDOW2_TOOLS {
+            if !SURFACE_TOOLS.contains(name) {
+                assert!(
+                    is_window2_native_call(name),
+                    "{name} is window2-only and must be routed natively"
+                );
+            }
         }
     }
 

@@ -12,6 +12,7 @@ pub mod screenshot;
 pub mod server;
 pub mod terminal;
 pub mod windowing;
+pub mod x11;
 pub mod windows;
 pub(crate) mod ydotool;
 
