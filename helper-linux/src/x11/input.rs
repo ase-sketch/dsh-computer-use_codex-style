@@ -392,7 +392,7 @@ pub fn type_text(id: u64, text: &str) -> Result<String> {
                 other => {
                     let keysym = Keysym::from_char(other);
                     let code = keycode_for(raw, keysym)?;
-                    let shifted = requires_shift(raw, code)?;
+                    let shifted = requires_shift(raw, code, keysym)?;
                     tap(raw, code, if shifted { Some(shift) } else { None })?;
                 }
             }
@@ -409,16 +409,26 @@ pub fn type_text(id: u64, text: &str) -> Result<String> {
 
 /// Whether the shifted level of a keycode is what produces this keysym.
 ///
-/// Index 0 of a keycode's keysym list is the unshifted level and index 1 the shifted
-/// one, so a keycode whose keysym only appears at index 1 has to be typed with Shift.
-fn requires_shift(raw: &x11rb::rust_connection::RustConnection, keycode: u8) -> Result<bool> {
+/// Target keysym requires Shift only when it appears at level >= 1 and is not
+/// directly available at level 0 (unshifted).
+fn requires_shift(
+    raw: &x11rb::rust_connection::RustConnection,
+    keycode: u8,
+    target: Keysym,
+) -> Result<bool> {
     let reply = raw
         .get_keyboard_mapping(keycode, 1)
         .map_err(|error| anyhow!("get_keyboard_mapping could not be sent: {error}"))?
         .reply()
         .map_err(|error| anyhow!("get_keyboard_mapping was refused: {error:?}"))?;
-    let levels = &reply.keysyms;
-    Ok(matches!(levels.len(), n if n > 1) && levels.first() != levels.get(1))
+    Ok(keysym_requires_shift(&reply.keysyms, target))
+}
+
+fn keysym_requires_shift(levels: &[u32], target: Keysym) -> bool {
+    if levels.first() == Some(&target.raw()) {
+        return false;
+    }
+    levels.get(1..).map_or(false, |rest| rest.contains(&target.raw()))
 }
 
 fn tap(
@@ -588,5 +598,38 @@ mod tests {
         assert_eq!(keysym_from_name("F5"), Some(Keysym::new(xkeysym::key::F1 + 4)));
         assert_eq!(keysym_from_name("F36"), None);
         assert_eq!(keysym_from_name("nonsense"), None);
+    }
+
+    #[test]
+    fn keysym_requires_shift_only_when_not_at_level_0() {
+        let sym_a = Keysym::from_char('a');
+        let sym_cap_a = Keysym::from_char('A');
+        let sym_1 = Keysym::from_char('1');
+        let sym_exclam = Keysym::from_char('!');
+        let sym_minus = Keysym::from_char('-');
+        let sym_underscore = Keysym::from_char('_');
+
+        // [a, A, a, A]
+        let key_a = [sym_a.raw(), sym_cap_a.raw(), sym_a.raw(), sym_cap_a.raw()];
+        assert!(!keysym_requires_shift(&key_a, sym_a));
+        assert!(keysym_requires_shift(&key_a, sym_cap_a));
+
+        // [1, !, 1, !]
+        let key_1 = [sym_1.raw(), sym_exclam.raw(), sym_1.raw(), sym_exclam.raw()];
+        assert!(!keysym_requires_shift(&key_1, sym_1));
+        assert!(keysym_requires_shift(&key_1, sym_exclam));
+
+        // [-, _, -, _]
+        let key_minus = [sym_minus.raw(), sym_underscore.raw(), sym_minus.raw(), sym_underscore.raw()];
+        assert!(!keysym_requires_shift(&key_minus, sym_minus));
+        assert!(keysym_requires_shift(&key_minus, sym_underscore));
+
+        // Key with same keysym at level 0 and 1
+        let key_same = [sym_a.raw(), sym_a.raw()];
+        assert!(!keysym_requires_shift(&key_same, sym_a));
+
+        // Empty levels or keysym not on this key
+        assert!(!keysym_requires_shift(&[], sym_a));
+        assert!(!keysym_requires_shift(&key_a, sym_1));
     }
 }
