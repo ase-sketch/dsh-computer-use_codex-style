@@ -74,7 +74,7 @@
     {
       "check": "image part is a valid PNG",
       "ok": true,
-      "detail": "5335 byte(s), magic=b'\\x89PNG\\r\\n\\x1a\\n'"
+      "detail": "5383 byte(s), magic=b'\\x89PNG\\r\\n\\x1a\\n'"
     },
     {
       "check": "PNG dimensions match the declared window dimensions",
@@ -94,7 +94,7 @@
     {
       "check": "the probe window is enumerated by list_windows",
       "ok": true,
-      "detail": "id=6291456 listed=[2097164, 6291456]"
+      "detail": "id=8388608 listed=[2097164, 8388608]"
     },
     {
       "check": "click returns the native X11 backend",
@@ -207,7 +207,7 @@
       {
         "app": "XTerm",
         "id": 2097164,
-        "title": "li@li-nitroan1641: /mnt/e/dsh-computer-use-linux/upstream-plugin"
+        "title": "li@li-nitroan1641: /mnt/e/dsh-computer-use-linux/wt-fix-experience"
       }
     ],
     "window_id": 2097164,
@@ -216,7 +216,7 @@
       "focused": false,
       "hidden": false,
       "overrideRedirect": false,
-      "pid": 1178491,
+      "pid": 276879,
       "windowType": null,
       "wmClass": "XTerm",
       "wmInstance": "xterm",
@@ -231,7 +231,7 @@
           {
             "app": "XTerm",
             "id": 2097164,
-            "title": "li@li-nitroan1641: /mnt/e/dsh-computer-use-linux/upstream-plugin"
+            "title": "li@li-nitroan1641: /mnt/e/dsh-computer-use-linux/wt-fix-experience"
           }
         ]
       }
@@ -258,7 +258,7 @@
       0,
       0
     ],
-    "probe_window_id": 6291456,
+    "probe_window_id": 8388608,
     "click_value": {
       "backend": "x11-native",
       "clicked": "coordinate",
@@ -319,7 +319,7 @@
   },
   "environment": {
     "display": ":99",
-    "binary": "/mnt/e/dsh-computer-use-linux/upstream-plugin/helper-linux/target/debug/dsh-computer-use"
+    "binary": "/mnt/e/dsh-computer-use-linux/wt-fix-experience/helper-linux/target/debug/dsh-computer-use"
   },
   "residual_risks": [
     "No compositor on Xvfb: the XComposite path is exercised only in its unredirected form, so a real compositor's redirect semantics are not covered.",

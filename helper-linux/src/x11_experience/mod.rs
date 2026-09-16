@@ -226,6 +226,17 @@ pub fn health_summary() -> serde_json::Value {
                 )),
                 _ => None,
             };
+            // An overlay that could not be made click-through is not drawn at all, so this
+            // is not a warning about a live hazard: it says the level of service dropped.
+            let click_degraded = match caps["overlayClickThrough"].as_bool() {
+                Some(false) => Some(format!(
+                    "the overlays are not drawn: they could not be made click-through, and an overlay                      that intercepts pointer events would break every synthesized click ({})",
+                    caps["overlayClickThroughError"]
+                        .as_str()
+                        .unwrap_or("reason not reported")
+                )),
+                _ => None,
+            };
             serde_json::json!({
                 "state": if armed { "armed" } else { "available" },
                 "available": true,
@@ -233,8 +244,12 @@ pub fn health_summary() -> serde_json::Value {
                 "pill": caps["xfixesCursorSuppression"],
                 "rawEvents": caps["rawEvents"],
                 "pollingFallback": caps["pointerPollingFallback"],
+                "overlayClickThrough": caps["overlayClickThrough"],
                 "escapeGrab": grab,
-                "degraded": degraded,
+                // One field, whichever reason applies: a refused Escape grab degrades the
+                // interrupt path, a refused input shape degrades click delivery. The grab
+                // refusal is reported first because it is the more common desktop.
+                "degraded": degraded.or(click_degraded),
             })
         }
     }
