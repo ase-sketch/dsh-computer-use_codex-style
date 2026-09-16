@@ -1,5 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -642,3 +644,114 @@ test('P2-SIDECAR-ALL-SURFACE surface=all merges native window2 with python brows
 })
 
 
+
+/**
+ * IMG-EDGE: the maxImageEdge knob must reach the native helper through the
+ * environment, because the official helper's hand-written argv parser aborts on
+ * unknown flags (see spawnNative's own note). The assertion reads the *real*
+ * environment of the spawned child by having the stub report it, so it cannot pass
+ * on a value that was only computed and never handed to spawn().
+ */
+test('IMG-EDGE spawnNative exports DSH_COMPUTER_USE_MAX_IMAGE_EDGE only for a finite positive value', async () => {
+  const original = process.env.DSH_COMPUTER_USE_MAX_IMAGE_EDGE
+
+  try {
+    for (const [label, configured] of [
+      ['a positive integer', 1280],
+      ['a positive float', 900.5],
+      ['zero (official, no cap)', 0],
+      ['undefined (official default)', undefined],
+      ['NaN', Number.NaN],
+      ['Infinity', Number.POSITIVE_INFINITY],
+      ['negative', -5],
+    ]) {
+      const sidecar = new Sidecar({
+        backend: 'linux',
+        engineRoot: pluginRoot,
+        ...(configured === undefined ? {} : { maxImageEdge: configured }),
+      })
+
+      const slug = label.replace(/[^a-z0-9]+/gi, '-')
+      const stub = path.join(os.tmpdir(), `img-edge-env-probe-${process.pid}-${slug}.mjs`)
+      fs.writeFileSync(stub, `#!/usr/bin/env node
+import readline from 'node:readline'
+const env = {
+  knob: process.env.DSH_COMPUTER_USE_MAX_IMAGE_EDGE === undefined ? 'undefined' : process.env.DSH_COMPUTER_USE_MAX_IMAGE_EDGE,
+  argv: process.argv.slice(2),
+}
+const rl = readline.createInterface({ input: process.stdin, terminal: false })
+rl.on('line', line => {
+  const text = line.trim()
+  if (!text) return
+  let req
+  try { req = JSON.parse(text) } catch { return }
+  console.log(JSON.stringify({ id: req.id, ok: true, result: { ok: true, backend: 'linux', env } }))
+})
+`)
+
+      const previous = process.env.DSH_COMPUTER_USE_HELPER
+      process.env.DSH_COMPUTER_USE_HELPER = stub
+      try {
+        const health = await sidecar.request('health')
+        const seen = (health && health.env) || (health && health.result && health.result.env)
+        assert.ok(seen, 'the probe helper must report the environment it was launched with')
+        const numeric = Number(configured)
+        const expected = Number.isFinite(numeric) && numeric > 0 ? String(configured) : 'undefined'
+        assert.equal(
+          seen.knob,
+          expected,
+          `maxImageEdge configured as ${label} must export ${expected} to the native helper`,
+        )
+        // The official CLI surface must stay exactly --parent-pid + pid: no new argv.
+        assert.deepEqual(seen.argv, ['--parent-pid', String(process.pid)], 'argv must stay the official surface')
+      } finally {
+        await sidecar.request('shutdown').catch(() => {})
+        sidecar.dispose()
+        if (previous !== undefined) process.env.DSH_COMPUTER_USE_HELPER = previous
+        else delete process.env.DSH_COMPUTER_USE_HELPER
+        fs.rmSync(stub, { force: true })
+      }
+    }
+  } finally {
+    if (original !== undefined) process.env.DSH_COMPUTER_USE_MAX_IMAGE_EDGE = original
+    else delete process.env.DSH_COMPUTER_USE_MAX_IMAGE_EDGE
+  }
+})
+
+test('IMG-EDGE the plugin never inherits a host DSH_COMPUTER_USE_MAX_IMAGE_EDGE', async () => {
+  // The cap must come from config, never from whatever the host happens to have
+  // exported: an inherited value would silently cap a helper the user never capped,
+  // which is exactly the "official behaviour changed behind your back" failure D-E
+  // exists to prevent.
+  const previousHost = process.env.DSH_COMPUTER_USE_MAX_IMAGE_EDGE
+  process.env.DSH_COMPUTER_USE_MAX_IMAGE_EDGE = '777'
+  const stub = path.join(os.tmpdir(), `img-edge-inherit-probe-${process.pid}.mjs`)
+  fs.writeFileSync(stub, `#!/usr/bin/env node
+import readline from 'node:readline'
+const rl = readline.createInterface({ input: process.stdin, terminal: false })
+rl.on('line', line => {
+  const text = line.trim()
+  if (!text) return
+  let req
+  try { req = JSON.parse(text) } catch { return }
+  const knob = process.env.DSH_COMPUTER_USE_MAX_IMAGE_EDGE === undefined ? 'undefined' : process.env.DSH_COMPUTER_USE_MAX_IMAGE_EDGE
+  console.log(JSON.stringify({ id: req.id, ok: true, result: { ok: true, backend: 'linux', knob } }))
+})
+`)
+  const previousHelper = process.env.DSH_COMPUTER_USE_HELPER
+  process.env.DSH_COMPUTER_USE_HELPER = stub
+  try {
+    const sidecar = new Sidecar({ backend: 'linux', engineRoot: pluginRoot })
+    const health = await sidecar.request('health')
+    const knob = health.knob !== undefined ? health.knob : health.result && health.result.knob
+    assert.equal(knob, 'undefined', 'an unconfigured plugin must not pass the host value to the helper')
+    await sidecar.request('shutdown').catch(() => {})
+    sidecar.dispose()
+  } finally {
+    if (previousHelper !== undefined) process.env.DSH_COMPUTER_USE_HELPER = previousHelper
+    else delete process.env.DSH_COMPUTER_USE_HELPER
+    if (previousHost !== undefined) process.env.DSH_COMPUTER_USE_MAX_IMAGE_EDGE = previousHost
+    else delete process.env.DSH_COMPUTER_USE_MAX_IMAGE_EDGE
+    fs.rmSync(stub, { force: true })
+  }
+})

@@ -1226,6 +1226,165 @@ fn a_launched_app_outlives_the_caller_because_it_is_detached() {
     drop(home);
 }
 
+/// Every capture in this test shares one process, and the knob is an environment
+/// variable, so the two halves below run in a fixed order and restore the value.
+fn with_max_image_edge<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+    const KEY: &str = "DSH_COMPUTER_USE_MAX_IMAGE_EDGE";
+    let previous = std::env::var(KEY).ok();
+    match value {
+        Some(value) => std::env::set_var(KEY, value),
+        None => std::env::remove_var(KEY),
+    }
+    let result = f();
+    match previous {
+        Some(value) => std::env::set_var(KEY, value),
+        None => std::env::remove_var(KEY),
+    }
+    result
+}
+
+/// Pull the base64 payload out of the `data:image/png;base64,...` an MCP image part carries.
+fn image_bytes(result: &dsh_computer_use::rmcp::model::CallToolResult) -> Vec<u8> {
+    use base64::Engine as _;
+    let data = result
+        .content
+        .iter()
+        .find_map(|content| content.as_image())
+        .expect("the state must carry the screenshot as an image part")
+        .data
+        .clone();
+    let encoded = data
+        .strip_prefix("data:image/png;base64,")
+        .expect("the image part carries a PNG data URL");
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .expect("the payload is valid base64")
+}
+
+/// The value half of a window2 result, parsed out of the JSON text block.
+fn window2_value(result: &dsh_computer_use::rmcp::model::CallToolResult) -> serde_json::Value {
+    let text = result
+        .content
+        .iter()
+        .filter_map(|content| content.as_text())
+        .map(|text| text.text.clone())
+        .collect::<String>();
+    serde_json::from_str(&text).expect("a JSON caption")
+}
+
+fn capture_window_state(id: u64) -> dsh_computer_use::rmcp::model::CallToolResult {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("window".to_string(), serde_json::json!({ "app": "Fixture", "id": id }));
+    arguments.insert("include_screenshot".to_string(), serde_json::json!(true));
+    dsh_computer_use::x11::window2::dispatch("get_window_state", arguments)
+        .expect("get_window_state must succeed")
+}
+
+/// IMG-EDGE, end to end on a real X server.
+///
+/// The knob has to satisfy three things at once, and only a live capture can show them:
+/// the image really shrinks, the value declares the size the image really has, and the
+/// coordinate space the input tools use is left at the original window size so a
+/// window-relative click does not land at half the intended offset.
+#[test]
+#[ignore = "needs Xvfb; run with DSH_CUA_XVFB_TEST=1 cargo test --test xvfb_window2 -- --ignored --test-threads=1"]
+fn the_max_image_edge_cap_shrinks_the_image_and_declares_both_sizes() {
+    if skip_if_disabled() {
+        return;
+    }
+    let Some(fixture) = fixture(108) else {
+        eprintln!("skipping: Xvfb could not be started on :108");
+        return;
+    };
+    fixture.paint(0x00ff0000);
+    let id = u64::from(fixture.window);
+
+    // 1. The official behaviour, captured first: no knob, no scaling, no extra fields.
+    let uncapped = with_display(&fixture, || with_max_image_edge(None, || capture_window_state(id)));
+    let uncapped_value = window2_value(&uncapped);
+    let uncapped_png = image_bytes(&uncapped);
+    let uncapped_image = image::load_from_memory(&uncapped_png).expect("a valid PNG");
+    assert_eq!(
+        (uncapped_image.width(), uncapped_image.height()),
+        (300, 200),
+        "without the knob the window is captured at its natural size"
+    );
+    assert_eq!(uncapped_value["screenshots"][0]["width"], serde_json::json!(300));
+    assert_eq!(uncapped_value["screenshots"][0]["height"], serde_json::json!(200));
+    let entry = uncapped_value["screenshots"][0].as_object().unwrap();
+    for absent in ["coordinateWidth", "coordinateHeight", "scale", "resized"] {
+        assert!(
+            !entry.contains_key(absent),
+            "the default wire shape must not grow a {absent} field"
+        );
+    }
+    let origin = (
+        uncapped_value["screenshots"][0]["originX"].clone(),
+        uncapped_value["screenshots"][0]["originY"].clone(),
+    );
+
+    // 2. A cap that does not bite must be byte-for-byte the uncapped capture: this is the
+    //    strong form of "不设/不生效时行为不变", measured on real pixels rather than argued.
+    let inert = with_display(&fixture, || {
+        with_max_image_edge(Some("2000"), || capture_window_state(id))
+    });
+    assert_eq!(
+        image_bytes(&inert),
+        uncapped_png,
+        "a cap larger than the image must not alter a single byte"
+    );
+
+    // 3. A cap that does bite: longest edge <= 100, ratio kept (300x200 -> 100x67).
+    let capped = with_display(&fixture, || {
+        with_max_image_edge(Some("100"), || capture_window_state(id))
+    });
+    let capped_value = window2_value(&capped);
+    let capped_image = image::load_from_memory(&image_bytes(&capped)).expect("a valid PNG");
+    let (capped_width, capped_height) = (capped_image.width(), capped_image.height());
+    assert!(
+        capped_width.max(capped_height) <= 100,
+        "the cap must bound the longest edge, got {capped_width}x{capped_height}"
+    );
+    assert!(
+        capped_width <= 300 && capped_height <= 200,
+        "the cap must never upscale, got {capped_width}x{capped_height}"
+    );
+
+    // The declared size must be the decoded size, or the model is told a lie about the
+    // image it is looking at (the contract the e2e driver asserts).
+    let shot = &capped_value["screenshots"][0];
+    assert_eq!(shot["width"], serde_json::json!(capped_width));
+    assert_eq!(shot["height"], serde_json::json!(capped_height));
+
+    // The coordinate space must stay the original window size: click/drag take
+    // window-relative coordinates, so this is what keeps the mapping honest.
+    assert_eq!(
+        shot["coordinateWidth"],
+        serde_json::json!(300),
+        "the coordinate space must stay the original window width"
+    );
+    assert_eq!(
+        shot["coordinateHeight"],
+        serde_json::json!(200),
+        "the coordinate space must stay the original window height"
+    );
+    assert_eq!(shot["resized"], serde_json::json!(true));
+
+    // `originX`/`originY` are root coordinates and must not be scaled either.
+    assert_eq!((shot["originX"].clone(), shot["originY"].clone()), origin);
+    assert_eq!(origin, (serde_json::json!(40), serde_json::json!(30)));
+
+    // The declared scale must match the real ratio between the two spaces.
+    let declared_scale = shot["scale"].as_f64().expect("a numeric scale");
+    assert!(
+        (declared_scale - f64::from(capped_width) / 300.0).abs() < 1e-6,
+        "the declared scale must be returned/coordinate, got {declared_scale}"
+    );
+
+    // The window identity block is untouched: this is metadata, not pixels.
+    assert_eq!(capped_value["window"], uncapped_value["window"]);
+}
+
 /// A compile-time guard so the ignored-reason string stays in one place and cannot drift
 /// from the run command quoted in this file's header.
 #[test]

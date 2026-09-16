@@ -109,13 +109,22 @@ enum ScreenshotCleanup {
 
 impl ScreenshotPayloadOptions {
     fn resolve(self) -> ResolvedScreenshotPayloadOptions {
+        // The DSH-only max-image-edge knob is the *default* bound on this surface: a caller
+        // that passes max_width/max_height still wins, and with the knob unset the bound is
+        // the built-in default, so the official behaviour is untouched (decision D-E).
+        //
+        // This is the path a full-desktop screenshot actually takes, and it is where the
+        // real "1920x1200 arrives at full size" cost came from: 1200 is under the 1920
+        // default, so nothing was ever scaled until the user opted in here.
+        let default_dimension = crate::image_edge::max_image_edge_from_env()
+            .unwrap_or(DEFAULT_SCREENSHOT_MAX_DIMENSION);
         let max_width = self
             .max_width
-            .unwrap_or(DEFAULT_SCREENSHOT_MAX_DIMENSION)
+            .unwrap_or(default_dimension)
             .clamp(1, ABSOLUTE_SCREENSHOT_MAX_DIMENSION);
         let max_height = self
             .max_height
-            .unwrap_or(DEFAULT_SCREENSHOT_MAX_DIMENSION)
+            .unwrap_or(default_dimension)
             .clamp(1, ABSOLUTE_SCREENSHOT_MAX_DIMENSION);
         let max_bytes = self
             .max_bytes
@@ -713,6 +722,8 @@ fn unique_suffix() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The knob lives in the process environment, so every module that sets it shares one lock.
+    use crate::image_edge::with_env as with_max_image_edge;
 
     fn test_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -832,9 +843,12 @@ mod tests {
 
     #[test]
     fn default_payload_downscales_long_edge() {
-        let capture =
+        // Holds the env lock and clears the knob: the assertion below is about the *official*
+        // default, and the max-image-edge tests in this module set a process-global variable.
+        let capture = with_max_image_edge(None, || {
             prepare_screenshot_payload(raw_capture(solid_png(4000, 1000)), Default::default())
-                .unwrap();
+                .unwrap()
+        });
 
         assert_eq!((capture.width, capture.height), (1920, 480));
         assert_eq!(
@@ -844,6 +858,65 @@ mod tests {
         assert!(capture.resized);
         assert!(capture.bytes <= DEFAULT_SCREENSHOT_MAX_BYTES);
         assert!(capture.data_url.starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn the_max_image_edge_knob_bounds_the_desktop_screenshot_by_default() {
+        // 1920x1200 is the reported real-hardware case: under the 1920 default it stayed at
+        // full size. With the knob set to 960 the same capture must come back at 960x600.
+        with_max_image_edge(Some("960"), || {
+            let capture = prepare_screenshot_payload(
+                raw_capture(solid_png(1920, 1200)),
+                ScreenshotPayloadOptions::default(),
+            )
+            .unwrap();
+            assert_eq!((capture.width, capture.height), (960, 600));
+            assert_eq!(
+                (capture.coordinate_width, capture.coordinate_height),
+                (1920, 1200),
+                "the coordinate space must stay the original screen size"
+            );
+            assert!(capture.resized);
+        });
+    }
+
+    #[test]
+    fn an_explicit_request_bounds_still_beat_the_knob() {
+        // The knob is a default, not a hard cap: a caller that asks for a specific bound
+        // keeps it, which is what makes the knob safe to leave on.
+        with_max_image_edge(Some("200"), || {
+            let capture = prepare_screenshot_payload(
+                raw_capture(solid_png(800, 400)),
+                ScreenshotPayloadOptions {
+                    max_width: Some(800),
+                    max_height: Some(800),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                (capture.width, capture.height),
+                (800, 400),
+                "the explicit request must win over the environment default"
+            );
+            assert!(!capture.resized);
+        });
+    }
+
+    #[test]
+    fn without_the_knob_the_official_default_is_untouched() {
+        with_max_image_edge(None, || {
+            let capture = prepare_screenshot_payload(
+                raw_capture(solid_png(1920, 1200)),
+                ScreenshotPayloadOptions::default(),
+            )
+            .unwrap();
+            // 1200 < 1920, so the official default does not scale it — the exact behaviour
+            // that must survive an unconfigured plugin.
+            assert_eq!((capture.width, capture.height), (1920, 1200));
+            assert!(!capture.resized);
+            assert_eq!((capture.coordinate_width, capture.coordinate_height), (1920, 1200));
+        });
     }
 
     #[test]
