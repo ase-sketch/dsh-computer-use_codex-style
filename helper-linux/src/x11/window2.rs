@@ -17,7 +17,7 @@ use serde_json::{json, Map, Value};
 use crate::rmcp::model::{CallToolResult, Content};
 
 use super::capture;
-use super::{element, input, window};
+use super::{element, input, launch, window};
 
 /// The thirteen window2 methods, in the official order.
 pub const WINDOW2_TOOLS: &[&str] = &[
@@ -421,19 +421,39 @@ fn list_apps() -> Result<CallToolResult, String> {
     })))
 }
 
+/// Launch an app, or raise its running instance, then report the window it owns.
+///
+/// The resolution and the detach live in the launch module; this only turns the outcome into the
+/// window2 JSON shape. The three outcomes are deliberately distinct, because the model
+/// acts differently on each: a raised existing window means "do not wait for anything",
+/// a new window is ready to be driven, and a launch without a window means "the app is
+/// probably still starting, look again" rather than "it failed".
 fn launch_app(arguments: &Map<String, Value>) -> Result<CallToolResult, String> {
     let app = required_string(arguments, "app").map_err(|error| error.to_string())?;
-    // Launching is deliberately not implemented by guessing at a command line. The
-    // official helper resolves an app id through the shell's application registry; X11
-    // has no equivalent, and spawning an arbitrary caller-supplied string as a program
-    // would be an injection hole, not a feature.
-    Err(refusal(
-        "launch_app",
-        &format!(
-            "launching {app:?} is not supported by the X11 backend: an app id cannot be resolved to a program without the desktop shell's application registry"
-        ),
-        Some("start the application yourself (for example from a terminal or the desktop menu), then select its window from list_windows()"),
-    ))
+    match launch::launch(app) {
+        Ok(outcome) => {
+            let window = outcome.window.as_ref().map(window_value);
+            let detail = outcome.window.as_ref().map(window_detail);
+            let mut value = json!({
+                "launched": outcome.launched,
+                "alreadyRunning": outcome.already_running,
+                "window": window,
+                "detail": detail,
+                "app": outcome.resolved.describe(),
+                "backend": super::X11_NATIVE_BACKEND,
+            });
+            if let Some(note) = outcome.note {
+                value["note"] = json!(note);
+            }
+            Ok(json_result(value))
+        }
+        Err(launch::LaunchFailure::Refused { reason, alternative }) => Err(refusal(
+            "launch_app",
+            &reason,
+            Some(alternative.as_str()),
+        )),
+        Err(launch::LaunchFailure::Failed(error)) => Err(error.to_string()),
+    }
 }
 
 fn get_window_state(arguments: &Map<String, Value>) -> Result<CallToolResult, String> {
@@ -788,9 +808,13 @@ mod tests {
     }
 
     #[test]
-    fn launch_app_refuses_structurally_instead_of_pretending() {
+    fn launch_app_refuses_an_app_it_cannot_resolve() {
+        // A name that is neither a desktop entry nor on PATH. The name must be one no
+        // machine could plausibly install: "code" used to be the sample here, but it now
+        // resolves to a real program on a developer machine, which would turn this
+        // refusal test into a launch test with a side effect.
         let mut arguments = Map::new();
-        arguments.insert("app".to_string(), json!("code"));
+        arguments.insert("app".to_string(), json!("definitely-not-installed-app-xyz-42"));
         let error = launch_app(&arguments).unwrap_err();
         let parsed: Value = serde_json::from_str(&error).expect("a structured refusal is JSON");
         assert_eq!(parsed["error"], json!("unsupported"));

@@ -128,8 +128,8 @@ pub(crate) fn experience_use(name: &str) -> ExperienceUse {
         "get_app_state" | "screenshot" | "get_window_state" => ExperienceUse::Observe,
         // Table reads: real work, but nothing is shown and nothing is driven.
         "list_apps" | "list_windows" | "get_window" => ExperienceUse::None,
-        // launch_app is intentionally absent: the X11 backend refuses it before doing
-        // anything, so arming for it would promise a turn that never starts.
+        // read-only table reads stay above; everything else, launch_app included, acts on
+        // the desktop and arms the experience layer.
         _ => ExperienceUse::Act,
     }
 }
@@ -835,11 +835,18 @@ async fn window2_health() -> Value {
 
     let mut degraded = capabilities.detail.clone();
     let mut methods: Vec<&str> = Vec::new();
-    let mut refused: Vec<Value> = Vec::new();
+    // Every window2 method this backend could not serve would be listed here. Nothing is
+    // refused on X11 at the moment: launch_app used to be the one entry, and it is now
+    // served through the desktop entries and $PATH.
+    let refused: Vec<Value> = Vec::new();
 
     methods.push("list_windows");
     methods.push("get_window");
     methods.push("list_apps");
+    // launch_app resolves through the XDG desktop entries and $PATH, so it is served here
+    // rather than refused; the resolution is what the Windows helper gets from the shell's
+    // application registry.
+    methods.push("launch_app");
     methods.push("activate_window");
     if capabilities.xtest.is_some() {
         methods.extend(["click", "press_key", "type_text", "scroll", "drag"]);
@@ -867,14 +874,6 @@ async fn window2_health() -> Value {
             "MIT-SHM is missing, so captures go through a slower synchronous GetImage".to_string(),
         );
     }
-
-    // launch_app is refused by design, not by environment: X11 has no application
-    // registry to resolve an app id against.
-    refused.push(json!({
-        "method": "launch_app",
-        "reason": "an app id cannot be resolved to a program without the desktop shell's application registry",
-        "alternative": "start the application yourself, then select its window from list_windows()",
-    }));
 
     json!({
         "available": true,

@@ -50,8 +50,23 @@ DSH_CUA_XVFB_TEST=1 cargo test --test xvfb_window2 -- --ignored --test-threads=1
 ```
 
 Without the environment variable the whole file is skipped, so `cargo test` stays green on
-a machine with no X server. The tests use their own displays (`:98`-`:106`) and never
+a machine with no X server. The tests use their own displays (`:98`-`:134`) and never
 touch the `DISPLAY` the developer is working in.
+
+`launch_app` is covered there end to end: the launcher resolves a desktop entry the test
+writes into a private `XDG_DATA_HOME`, starts the app detached, waits for its window, and a
+second launch raises that window instead of starting another instance. Those tests start a
+real `xterm` and kill it again.
+
+### Real-session launch checks
+
+`tests/real_launch.rs` runs the same launcher against the operator's own X server. It is
+gated a second time because it acts on the live desktop (it may raise a window and take the
+focus for a moment), and it only ever starts an `xterm` of its own, which it kills:
+
+```sh
+DSH_CUA_REAL_LAUNCH=1 cargo test --test real_launch -- --ignored --test-threads=1 --nocapture
+```
 
 Three cases are marked ignored for a reason that is more than "needs Xvfb":
 
