@@ -76,3 +76,22 @@ Targeting uses string identifiers (`app` parameter):
   - When AT-SPI is unavailable or disabled, `get_app_state` returns `text: ""` or omits `text`, while still returning valid screenshots. Agents can seamlessly fall back to visual inspection and coordinate-based clicking.
 - **Permission Rejection**:
   - If Portal permissions are withheld, the helper fails fast with an explicit permission rejection message rather than hanging silently.
+
+## 6. P2 Progress: window2 Full Surface (X11 Parity)
+
+P2 expands `helper-linux` from the 7-tool sky.window subset to the **13-tool Codex window2 full surface**, matching Windows window2 parity.
+
+### Key Capabilities in P2
+1. **13-Tool Surface**: Support for `list_windows`, `get_window`, `list_apps`, `launch_app`, `get_window_state`, `click`, `press_key`, `type_text`, `scroll`, `set_value`, `drag`, `perform_secondary_action`, `activate_window`.
+2. **Pure-Rust x11rb Architecture**: Implemented over pure-Rust `x11rb-protocol` extensions (XTest, XShm, XFixes, XInput2) without requiring external C libraries (`libxcb-dev`).
+3. **Structured Window Targeting**: Fully targets `Window { id, app, title }` instances with EWMH-backed enumeration and rehydration.
+4. **Element Indexing via AT-SPI**: Structured accessibility trees with 1-based element indices (`element_index`), supporting direct indexed clicking, `set_value`, and secondary actions.
+5. **Experience & Safety Layer**:
+   - Status overlay pill via override-redirect window.
+   - Synthetic cursor tracking with hardware pointer suppression via XFixes.
+   - Freshness lease enforcement via XInput2 raw event tracking.
+   - Global physical `Escape` key intercept via X11 keygrab.
+6. **Tiered Display Server Architecture**:
+   - **X11 Full Mode**: Complete 13-tool parity, occluded window capture via MIT-SHM, overlay pill, synthetic cursor, and keygrab interrupt.
+   - **Wayland Degraded Mode**: Fallback to Portal-backed capture and input injection; overlay and global keygrabs degrade gracefully with clear status reporting in `computer_use_health`.
+

@@ -173,8 +173,9 @@ export function apply(ctx, config) {
   } else if (backend === 'linux' && surfaces.length === 1 && surfaces[0] === 'computer' && (!hostSurface || hostSurface === 'linux')) {
     surfaces = ['linux']
   }
-  const desktop = surfaces.includes('computer') || (surfaces.includes('all') && backend !== 'linux')
-  const wantsLinux = surfaces.includes('linux') || (surfaces.includes('all') && backend === 'linux')
+  const isWindow2 = hostSurface === 'computer' || hostSurface === 'all'
+  const desktop = surfaces.includes('computer') || (surfaces.includes('all') && (backend !== 'linux' || isWindow2))
+  const wantsLinux = surfaces.includes('linux') || (surfaces.includes('all') && backend === 'linux' && !isWindow2)
   const wantsBrowser = surfaces.includes('browser') || surfaces.includes('all')
   const gateBrowser = !wantsBrowser
   const state = {
