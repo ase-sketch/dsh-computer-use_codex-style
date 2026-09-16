@@ -67,10 +67,33 @@ export function captureLimits(maxImageEdge, engineRoot) {
   return limits
 }
 
+/**
+ * Resolve the desktop backend based on raw configuration and platform.
+ *
+ * Explicit configuration always takes precedence. When unspecified (undefined,
+ * null, or empty string), falls back by platform:
+ * - 'linux' -> 'linux'
+ * - 'win32' -> 'windows'
+ * - other platforms (including 'darwin') -> 'windows' (conservative parity)
+ *
+ * @param {string|undefined|null} rawBackend
+ * @param {string} [platform] defaults to process.platform
+ * @returns {string}
+ */
+export function resolveBackend(rawBackend, platform = process.platform) {
+  if (rawBackend !== undefined && rawBackend !== null && rawBackend !== '') {
+    return rawBackend
+  }
+  if (platform === 'linux') {
+    return 'linux'
+  }
+  return 'windows'
+}
+
 export const Config = Schema.object({
   pythonPath: Schema.string().default(''),
   engineRoot: Schema.string().default(''),
-  backend: Schema.union(['windows', 'linux', 'live', 'fake', 'helper']).default('windows'),
+  backend: Schema.union(['windows', 'linux', 'live', 'fake', 'helper']),
   /**
    * Default tool surface. `computer` is the official 13-method whitelist; the
    * `gated` fallback used to hand the model the whole 18-row table (TC-01).
@@ -185,7 +208,7 @@ export default class ComputerUseService extends Service {
   constructor(ctx, config) {
     super(ctx, 'dshComputerUse')
     const rawConfig = config || {}
-    const backend = rawConfig.backend || 'windows'
+    const backend = resolveBackend(rawConfig.backend)
     const surfaceSpecified = rawConfig.surface !== undefined && rawConfig.surface !== ''
     const surface = surfaceSpecified ? rawConfig.surface : (backend === 'linux' ? 'linux' : 'computer')
     this.config = {
