@@ -184,11 +184,13 @@ export default class ComputerUseService extends Service {
 
   constructor(ctx, config) {
     super(ctx, 'dshComputerUse')
+    const rawConfig = config || {}
+    const backend = rawConfig.backend || 'windows'
+    const surfaceSpecified = rawConfig.surface !== undefined && rawConfig.surface !== ''
+    const surface = surfaceSpecified ? rawConfig.surface : (backend === 'linux' ? 'linux' : 'computer')
     this.config = {
       pythonPath: '',
       engineRoot: defaultEngineRoot(),
-      backend: 'windows',
-      surface: 'computer',
       stealFocus: true,
       maxImageEdge: 0,
       cursorScale: 1,
@@ -204,6 +206,8 @@ export default class ComputerUseService extends Service {
       serverInstructions:
         'UI automation through the DeepSeek Harness Computer Use tools using the initialized session. Codex is not required.',
       ...config,
+      backend,
+      surface,
     }
     this.sidecar = new Sidecar(this.config)
     this.experience = createExperience(this.config.experience)

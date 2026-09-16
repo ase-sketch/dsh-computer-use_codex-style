@@ -346,18 +346,30 @@ const NATIVE_CALLS = new Set([
   'window',
 ])
 
+export const LINUX_CALLS = new Set([
+  'list_apps',
+  'get_app_state',
+  'screenshot',
+  'click',
+  'scroll',
+  'press_key',
+  'type_text',
+])
+
 export function pythonCatalog(surface) {
   const name = String(surface || '')
   if (name === 'browser' || name === 'all') return true
   if (name === 'mac') return process.platform !== 'darwin'
+  if (name === 'linux') return false
   return false
 }
 
-export function usesPython(method, params = {}) {
+export function usesPython(method, params = {}, backend) {
   if (method === 'tools') return pythonCatalog(params.surface)
   if (method !== 'call') return false
   const name = String(params.name || '')
   if (!name) return false
+  if (backend === 'linux' && LINUX_CALLS.has(name)) return false
   if (name === 'batch_actions') {
     const actions = params.arguments && Array.isArray(params.arguments.actions) ? params.arguments.actions : []
     if (actions.some(item => item && item.name && !NATIVE_CALLS.has(String(item.name)))) return true
@@ -380,8 +392,11 @@ export function mergeToolLists(native, py, surface) {
 
 export class Sidecar {
   constructor(config) {
-    this.config = config
-    const preserve = config.preserveHelperOnTimeout === true
+    this.config = config || {}
+    if (!this.config.surface && String(this.config.backend || '').toLowerCase() === 'linux') {
+      this.config = { ...this.config, surface: 'linux' }
+    }
+    const preserve = this.config.preserveHelperOnTimeout === true
     this.primary = new HelperProcess(preserve, code => this.noteHelperExit(code))
     this.python = new HelperProcess(preserve)
     this.chain = Promise.resolve()
@@ -506,7 +521,13 @@ export class Sidecar {
       extra.DSH_CU_OVERLAY_CAPTURE_EXCLUSION = exclusion
     }
     const { env, injected, excluded } = sanitizedEnvironment(extra, this.config.envAllowlist)
-    const child = spawn(exe, args, {
+    let cmd = exe
+    let cmdArgs = args
+    if (exe.endsWith('.js') || exe.endsWith('.mjs')) {
+      cmd = process.execPath
+      cmdArgs = [exe, ...args]
+    }
+    const child = spawn(cmd, cmdArgs, {
       cwd: engineRoot,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -686,7 +707,7 @@ export class Sidecar {
       if (method === 'tools') return this.listTools(params, signal, timeoutMs)
       // A catalog build that outruns its budget must not cost the warm catalog.
       const keepAlive = method === 'call' && params?.name === 'list_apps'
-      const session = usesPython(method, params) ? await this.ensurePython() : this.primary
+      const session = usesPython(method, params, this.config.backend) ? await this.ensurePython() : this.primary
       // Turn bookkeeping lives on the Sidecar (it owns the previous turn scope), not
       // on the helper process. Calling it on `session` threw a TypeError and made
       // every Computer Use tool call fail before it ever reached the helper.
@@ -703,12 +724,15 @@ export class Sidecar {
   }
 
   async listTools(params = {}, signal, timeoutMs) {
-    const surface = String(params.surface || this.config.surface || 'computer')
+    const defaultSurface = this.config.backend === 'linux' ? 'linux' : 'computer'
+    const surface = String(params.surface || this.config.surface || defaultSurface)
     const payload = { ...params, surface }
     if (surface === 'browser' || surface === 'mac') {
       return (await this.ensurePython()).rawRequest('tools', payload, signal, timeoutMs)
     }
-    const nativeSurface = surface === 'all' ? 'desktop' : surface
+    const nativeSurface = surface === 'all'
+      ? (this.config.backend === 'linux' ? 'linux' : 'desktop')
+      : surface
     const native = await this.primary.rawRequest('tools', { ...payload, surface: nativeSurface }, signal, timeoutMs)
     if (surface !== 'all' && native?.deferred !== 'python') return native
     try {

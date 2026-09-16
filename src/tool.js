@@ -164,13 +164,23 @@ const BROWSER_ENTRY_GUIDANCE = [
 ].join('\n')
 
 export function apply(ctx, config) {
-  const surfaces = Array.isArray(config.surfaces) ? config.surfaces : ['computer']
-  const desktop = surfaces.length === 0 || surfaces.includes('computer') || surfaces.includes('all')
+  const backend = ctx.dshComputerUse?.config?.backend
+  const hostSurface = ctx.dshComputerUse?.config?.surface
+  const rawSurfaces = Array.isArray(config.surfaces) ? config.surfaces : []
+  let surfaces = rawSurfaces
+  if (surfaces.length === 0) {
+    surfaces = [hostSurface || (backend === 'linux' ? 'linux' : 'computer')]
+  } else if (backend === 'linux' && surfaces.length === 1 && surfaces[0] === 'computer' && (!hostSurface || hostSurface === 'linux')) {
+    surfaces = ['linux']
+  }
+  const desktop = surfaces.includes('computer') || (surfaces.includes('all') && backend !== 'linux')
+  const wantsLinux = surfaces.includes('linux') || (surfaces.includes('all') && backend === 'linux')
   const wantsBrowser = surfaces.includes('browser') || surfaces.includes('all')
   const gateBrowser = !wantsBrowser
   const state = {
     browserUnlocked: false,
     exposedNames: [],
+    healthRegistered: false,
     /**
      * The experience layer is owned by the host-plane service, which owns the store and
      * the turn lifecycle. Without it -- a harness that never mounted the host plane --
@@ -221,9 +231,18 @@ export function apply(ctx, config) {
     if (String(exec.arguments?.name || '') === BROWSER_SKILL) void unlockBrowserTools(ctx, state, config)
   })
 
-  const ready = desktop ? registerDesktop(ctx, state, config) : Promise.resolve()
+  let ready = Promise.resolve()
+  if (desktop) ready = ready.then(() => registerDesktop(ctx, state, config))
+  if (wantsLinux) ready = ready.then(() => registerLinux(ctx, state, config))
   if (wantsBrowser) return Promise.resolve(ready).then(() => unlockBrowserTools(ctx, state, config))
   return ready
+}
+
+function ensureHealthAndExperience(ctx, state, config, error) {
+  if (state.healthRegistered) return
+  state.healthRegistered = true
+  ctx.tools.register(healthTool(ctx, state, config, error))
+  registerExperienceTool(ctx, state)
 }
 
 async function registerDesktop(ctx, state, config) {
@@ -232,8 +251,7 @@ async function registerDesktop(ctx, state, config) {
     const listed = await ctx.dshComputerUse.tools('computer')
     desktops = Array.isArray(listed?.tools) ? listed.tools.filter(spec => spec?.name) : []
   } catch (error) {
-    ctx.tools.register(healthTool(ctx, state, config, String(error)))
-    registerExperienceTool(ctx, state)
+    ensureHealthAndExperience(ctx, state, config, String(error))
     return
   }
   // Harness extensions are requested as their own surface (TC-01). A helper
@@ -253,17 +271,42 @@ async function registerDesktop(ctx, state, config) {
   }
   const enabled = new Set(config.enabledTools || [])
   const extras = harness.filter(spec => enabled.has(spec.name))
-  ctx.tools.register(healthTool(ctx, state, config))
-  registerExperienceTool(ctx, state)
+  ensureHealthAndExperience(ctx, state, config)
   const exposed = desktops.concat(extras)
+  const known = new Set(state.exposedNames || [])
   for (const spec of exposed) {
+    if (known.has(spec.name)) continue
     try {
       ctx.tools.register(makeSidecarTool(ctx, spec, config, state, {}))
+      known.add(spec.name)
     } catch (error) {
       console.error(`[dsh-computer-use] skipped tool ${spec.name}: ${error}`)
     }
   }
-  state.exposedNames = exposed.map(spec => spec.name)
+  state.exposedNames = [...known]
+}
+
+async function registerLinux(ctx, state, config) {
+  let linuxTools
+  try {
+    const listed = await ctx.dshComputerUse.tools('linux')
+    linuxTools = Array.isArray(listed?.tools) ? listed.tools.filter(spec => spec?.name) : []
+  } catch (error) {
+    ensureHealthAndExperience(ctx, state, config, String(error))
+    return
+  }
+  ensureHealthAndExperience(ctx, state, config)
+  const known = new Set(state.exposedNames || [])
+  for (const spec of linuxTools) {
+    if (known.has(spec.name)) continue
+    try {
+      ctx.tools.register(makeSidecarTool(ctx, spec, config, state, {}))
+      known.add(spec.name)
+    } catch (error) {
+      console.error(`[dsh-computer-use] skipped linux tool ${spec.name}: ${error}`)
+    }
+  }
+  state.exposedNames = [...known]
 }
 
 async function unlockBrowserTools(ctx, state, config) {
