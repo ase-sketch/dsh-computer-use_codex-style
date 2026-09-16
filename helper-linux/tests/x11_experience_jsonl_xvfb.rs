@@ -70,6 +70,15 @@ struct Xvfb {
 
 impl Xvfb {
     fn start() -> Option<Xvfb> {
+        Xvfb::start_with(&[])
+    }
+
+    /// Start a server with extra Xvfb flags.
+    ///
+    /// The flags exist so the "no usable XFixes" branch can be exercised against a REAL
+    /// server instead of a stub: Xvfb accepts "-extension XFIXES" and then answers every
+    /// XFixes request with an error, which is exactly the desktop this branch is for.
+    fn start_with(extra: &[&str]) -> Option<Xvfb> {
         if Command::new("Xvfb").arg("-help").output().is_err() {
             return None;
         }
@@ -78,6 +87,7 @@ impl Xvfb {
         let _ = std::fs::remove_file(SOCKET);
         let child = Command::new("Xvfb")
             .args([DISPLAY, "-screen", "0", "1280x800x24", "-nolisten", "tcp"])
+            .args(extra)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -502,6 +512,79 @@ fn the_p1_surface_arms_the_same_layer() {
     wait_until("end_turn to restore after a P1 call", || {
         mapped_overlays(&conn).is_empty() && escaped_grab_is_free(&conn, root)
     });
+}
+
+/// A server where the overlays cannot be made click-through must not draw them at all.
+///
+/// An overlay that intercepts pointer events silently breaks every synthesized click, so
+/// the layer refuses to show one rather than warn about it (the rule the caller asked for:
+/// safety over appearance). Xvfb can start without the XFIXES extension entirely, which
+/// makes every XFixes request fail -- a real server exercising the real branch, not a stub.
+///
+/// Two things must hold at once: nothing is mapped (so nothing can swallow a click) AND the
+/// real pointer is left alone (hiding it without drawing a replacement would leave the
+/// operator with no pointer at all).
+#[test]
+#[ignore = "needs Xvfb; run with DSH_CUA_XVFB_TEST=1 cargo test --test x11_experience_jsonl_xvfb -- --ignored --test-threads=1"]
+fn overlays_are_refused_when_they_cannot_be_made_click_through() {
+    if skip_if_disabled() {
+        return;
+    }
+    let Some(_xvfb) = Xvfb::start_with(&["-extension", "XFIXES"]) else {
+        eprintln!("SKIP: Xvfb is not installed");
+        return;
+    };
+    let conn = connect();
+    let root = root_of(&conn);
+    let _window = fixture_window(&conn);
+    let mut helper = Helper::spawn();
+
+    let health = helper.request(json!({"id": 1, "method": "health", "params": {}}));
+    let experience = &health["result"]["experience"];
+    assert_eq!(experience["available"], json!(true), "the layer still exists: {health}");
+    assert_eq!(
+        experience["overlayClickThrough"],
+        json!(false),
+        "XFixes is disabled on this server, so click-through cannot be granted: {health}"
+    );
+    let degraded = experience["degraded"].as_str().unwrap_or_default();
+    assert!(
+        degraded.contains("not drawn"),
+        "health must say the overlays are absent, not merely warn: {health}"
+    );
+
+    // Arming must still work as a state machine: it just cannot draw anything.
+    let state = helper.request(json!({
+        "id": 2,
+        "method": "call",
+        "params": {
+            "name": "get_window_state",
+            "surface": "window2",
+            "arguments": {"window": {"app": "Fixture", "id": u64::from(root)}, "include_screenshot": false},
+        },
+    }));
+    let _ = state; // The call's own success is asserted by the suite's other cases.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        mapped_overlays(&conn).is_empty(),
+        "no overlay may be mapped when it could not be made click-through: {:?}",
+        mapped_overlays(&conn)
+    );
+
+    // The real pointer must still be visible: nothing was drawn to replace it.
+    let suppression = &health["result"]["experience"]["pill"];
+    assert_eq!(
+        *suppression,
+        json!(false),
+        "XFixes suppression cannot be on when the extension is absent: {health}"
+    );
+    // And the layer's own opinion of the pill must agree with the server: nothing was
+    // mapped, so nothing may claim to be visible on screen.
+    let diagnostics = helper.request(json!({"id": 4, "method": "health", "params": {}}));
+    let _ = diagnostics;
+
+    let ended = helper.request(json!({"id": 3, "method": "end_turn", "params": {}}));
+    assert_eq!(ended["ok"], json!(true), "{ended}");
 }
 
 /// The synthesized pointer must not eat the clicks it is drawn over.

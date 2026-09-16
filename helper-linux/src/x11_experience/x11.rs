@@ -75,6 +75,12 @@ struct Shared {
     capabilities: Mutex<serde_json::Value>,
     /// What the X thread last managed to do about the Escape key.
     esc_grab: Mutex<EscGrab>,
+    /// Whether the X thread may draw overlays at all (see `Platform::overlays_usable`).
+    ///
+    /// Held here as well because the pure `Pill` state would otherwise report itself
+    /// visible on a server where nothing is ever mapped -- the same "honest health" rule
+    /// the rest of this layer follows.
+    overlays_usable: AtomicBool,
 }
 
 /// How Escape is actually being detected right now.
@@ -133,11 +139,18 @@ impl Handle {
             lease.arm(Instant::now());
             lease.observe(Instant::now());
         }
-        if let Ok(mut p) = self.shared.pill.lock() {
-            p.show(PillState::Observing, Instant::now());
-            p.pulse(Instant::now());
+        if self.overlays_usable() {
+            if let Ok(mut p) = self.shared.pill.lock() {
+                p.show(PillState::Observing, Instant::now());
+                p.pulse(Instant::now());
+            }
         }
         self.send(Command::Begin { label: PillState::Observing.label() });
+    }
+
+    /// Whether this session can draw overlays without intercepting pointer events.
+    fn overlays_usable(&self) -> bool {
+        self.shared.overlays_usable.load(Ordering::SeqCst)
     }
 
     /// Re-observe: clears staleness and re-states the pill.
@@ -145,9 +158,11 @@ impl Handle {
         if let Ok(mut lease) = self.shared.lease.lock() {
             lease.observe(Instant::now());
         }
-        if let Ok(mut p) = self.shared.pill.lock() {
-            p.show(PillState::Observing, Instant::now());
-            p.pulse(Instant::now());
+        if self.overlays_usable() {
+            if let Ok(mut p) = self.shared.pill.lock() {
+                p.show(PillState::Observing, Instant::now());
+                p.pulse(Instant::now());
+            }
         }
         // Re-state the pill as observing. Begin is idempotent (the grab is held and the
         // overlays are mapped already), so this repaints the overlay rather than arming
@@ -159,9 +174,11 @@ impl Handle {
 
     /// A tool action is in flight.
     pub fn working(&self) {
-        if let Ok(mut p) = self.shared.pill.lock() {
-            if p.is_visible() {
-                p.show(PillState::Working, Instant::now());
+        if self.overlays_usable() {
+            if let Ok(mut p) = self.shared.pill.lock() {
+                if p.is_visible() {
+                    p.show(PillState::Working, Instant::now());
+                }
             }
         }
         self.send(Command::Working);
@@ -169,9 +186,11 @@ impl Handle {
 
     /// The operator touched the machine.
     pub fn blocked(&self) {
-        if let Ok(mut p) = self.shared.pill.lock() {
-            if p.is_visible() {
-                p.show(PillState::Blocked, Instant::now());
+        if self.overlays_usable() {
+            if let Ok(mut p) = self.shared.pill.lock() {
+                if p.is_visible() {
+                    p.show(PillState::Blocked, Instant::now());
+                }
             }
         }
         self.send(Command::Blocked);
@@ -382,6 +401,13 @@ struct Platform {
     pill_mapped: bool,
     cursor_win: Window,
     cursor_mapped: bool,
+    /// Whether the overlays may be shown at all.
+    ///
+    /// An overlay that cannot be made click-through is not drawn: it would intercept the
+    /// clicks this helper exists to synthesize, and swallowing those is an unacceptable
+    /// behaviour regression. Safety wins over cosmetics, so a server without usable
+    /// XFixes gets no pill and no synthesized pointer, and health says why.
+    overlays_usable: bool,
     esc_keycode: Option<u8>,
     esc_grabbed: bool,
     cursor_hidden: bool,
@@ -429,12 +455,19 @@ impl Platform {
         // as a usability one, and this helper only ever synchronizes the pointer -- no
         // overlay ever needs to be clickable.
         let mut click_through = true;
+        let mut click_through_error: Option<String> = None;
         for (window, name) in [(pill_win, "pill"), (cursor_win, "cursor")] {
             if let Err(error) = make_click_through(&conn, window) {
                 click_through = false;
                 eprintln!("x11-experience: {name} overlay could not be made click-through: {error}");
+                click_through_error.get_or_insert(format!("{name} overlay: {error}"));
             }
         }
+        // No usable input shape means no overlays at all. This is deliberately a refusal
+        // rather than a warning: an overlay that intercepts pointer events silently breaks
+        // every synthesized click, which is the failure this whole request sequence exists
+        // to prevent.
+        let overlays_usable = click_through;
         conn.flush().map_err(|e| e.to_string())?;
 
         let esc_keycode = keysym_to_keycode(&conn, KEYSYM_ESCAPE);
@@ -462,6 +495,8 @@ impl Platform {
             // a server that refused the request cannot leave the helper silently
             // swallowing the operator's clicks.
             "overlayClickThrough": click_through,
+            "overlaysUsable": overlays_usable,
+            "overlayClickThroughError": click_through_error,
             "escapeKeycode": esc_keycode,
             "fontMetrics": char_width,
         });
@@ -476,6 +511,7 @@ impl Platform {
             pill_mapped: false,
             cursor_win,
             cursor_mapped: false,
+            overlays_usable,
             esc_keycode,
             esc_grabbed: false,
             cursor_hidden: false,
@@ -599,7 +635,13 @@ impl Platform {
 
     /// Blank the real pointer. XFixes hides it for the whole screen when asked on the
     /// root window, which is what makes "exactly one pointer" observable.
+    ///
+    /// Refused outright when the overlays are unusable: hiding the operator's real pointer
+    /// without drawing a replacement would leave them with no pointer at all.
     fn set_cursor_hidden(&mut self, hidden: bool) {
+        if hidden && !self.overlays_usable {
+            return;
+        }
         if hidden == self.cursor_hidden {
             return;
         }
@@ -621,6 +663,10 @@ impl Platform {
     }
 
     fn show_pill(&mut self, state: PillState, rect: pill::Rect) {
+        // Same rule as the cursor: no cosmetic banner is worth intercepting a click.
+        if !self.overlays_usable {
+            return;
+        }
         let _ = xproto::configure_window(
             &self.conn,
             self.pill_win,
@@ -676,6 +722,11 @@ impl Platform {
 
     /// Draw the synthesized pointer at the pointer's real position.
     fn draw_cursor(&mut self, force: bool) {
+        // Never map the sprite when it could not be made click-through: a pointer-sized
+        // window that eats clicks is worse than no synthesized pointer.
+        if !self.overlays_usable {
+            return;
+        }
         let pointer = self.pointer();
         self.last_pointer = pointer;
         let sprite = cursor::sprite(self.pressed_at, Instant::now());
@@ -775,6 +826,9 @@ pub fn spawn() -> Result<(Handle, serde_json::Value), String> {
         pill: Mutex::new(Pill::new(platform.screen)),
         escaped: AtomicBool::new(false),
         last_error: Mutex::new(None),
+        overlays_usable: AtomicBool::new(
+            capabilities["overlaysUsable"].as_bool().unwrap_or(false),
+        ),
         capabilities: Mutex::new(capabilities.clone()),
         esc_grab: Mutex::new(EscGrab::default()),
     });

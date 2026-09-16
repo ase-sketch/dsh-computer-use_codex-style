@@ -93,6 +93,9 @@ P2 expands `helper-linux` from the 7-tool sky.window subset to the **13-tool Cod
    - Both overlays are **click-through** (empty XFixes `ShapeInput` region, the X11 equivalent
      of the Windows overlay's `WS_EX_TRANSPARENT`), so arming the layer never intercepts the
      clicks the helper is synthesizing; `health.experience.overlayClickThrough` reports it.
+   - When that cannot be granted (no usable XFixes, or a refused request) the overlays are
+     **not drawn at all** and the real pointer is left alone, with the reason in
+     `health.experience.degraded` — a pill is never worth swallowing a click.
    - Freshness lease enforcement via XInput2 raw event tracking.
    - Global physical `Escape` key intercept via X11 keygrab, degrading to XInput2 raw-key
      detection with an honest `health.experience.degraded` note when the compositor already

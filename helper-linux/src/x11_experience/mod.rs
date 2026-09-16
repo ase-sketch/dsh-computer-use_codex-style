@@ -226,14 +226,15 @@ pub fn health_summary() -> serde_json::Value {
                 )),
                 _ => None,
             };
-            // An overlay that refused to become click-through is the one failure mode of
-            // this layer that can silently steal the operator's clicks, so it is promoted
-            // out of capabilities() into the same degraded list health already has.
+            // An overlay that could not be made click-through is not drawn at all, so this
+            // is not a warning about a live hazard: it says the level of service dropped.
             let click_degraded = match caps["overlayClickThrough"].as_bool() {
-                Some(false) => Some(
-                    "the overlays could not be made click-through: they may intercept pointer events"
-                        .to_string(),
-                ),
+                Some(false) => Some(format!(
+                    "the overlays are not drawn: they could not be made click-through, and an overlay                      that intercepts pointer events would break every synthesized click ({})",
+                    caps["overlayClickThroughError"]
+                        .as_str()
+                        .unwrap_or("reason not reported")
+                )),
                 _ => None,
             };
             serde_json::json!({

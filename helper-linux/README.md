@@ -197,6 +197,16 @@ X11 equivalent of the Windows overlay's `WS_EX_TRANSPARENT`), and
 This was a real regression: arming the layer made the synthesized cursor intercept clicks, and
 the headless window2 end-to-end run failed with `[FAIL] xterm clicks land inside the
 target window  under pointer=0x400003 family=None`.
+
+**If click-through cannot be granted, the overlays are not drawn at all.** A server without
+usable XFixes (or one that refuses the request) gets no pill and no synthesized pointer, the
+real pointer is left visible, and `health.experience.degraded` says so. Hiding the real
+pointer without drawing a replacement would leave the operator with no pointer, and drawing an
+overlay that eats clicks breaks every synthesized click — both are worse than a missing pill, so
+the layer refuses rather than warns. `health.experience.overlayClickThrough` reports the
+decision. The branch is covered against a real Xvfb started with `-extension XFIXES`,
+not a stub.
+
 **A refused Escape grab is a normal desktop, not a failure.** The bare Escape combination is
 routinely held by the compositor's own global shortcut (KWin holds it on the machine this was
 verified on), and a second client asking for it gets `BadAccess`. The layer stays fully
