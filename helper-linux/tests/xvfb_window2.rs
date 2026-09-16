@@ -568,6 +568,74 @@ fn typing_sends_each_character_as_a_key_event() {
 
 #[test]
 #[ignore = "needs Xvfb; run with DSH_CUA_XVFB_TEST=1 cargo test --test xvfb_window2 -- --ignored --test-threads=1"]
+fn typing_mixed_characters_preserves_case_and_symbols() {
+    if skip_if_disabled() {
+        return;
+    }
+    let Some(fixture) = fixture(107) else {
+        eprintln!("skipping: Xvfb could not be started on :107");
+        return;
+    };
+    fixture
+        .connection
+        .change_window_attributes(
+            fixture.window,
+            &x11rb::protocol::xproto::ChangeWindowAttributesAux::new()
+                .event_mask(EventMask::EXPOSURE | EventMask::KEY_PRESS),
+        )
+        .unwrap();
+    fixture.connection.flush().unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+
+    let setup = fixture.connection.setup();
+    let min = setup.min_keycode;
+    let count = setup.max_keycode - min + 1;
+    let mapping = fixture
+        .connection
+        .get_keyboard_mapping(min, count)
+        .unwrap()
+        .reply()
+        .unwrap();
+    let per_keycode = usize::from(mapping.keysyms_per_keycode.max(1));
+
+    let input_text = "abc-1./A_!";
+    let note = with_display(&fixture, || {
+        dsh_computer_use::x11::input::type_text(u64::from(fixture.window), input_text)
+    })
+    .expect("typing must be injectable");
+    assert!(note.contains(&format!("{} character", input_text.len())));
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut received = String::new();
+    while Instant::now() < deadline && received.len() < input_text.len() {
+        match fixture.connection.poll_for_event() {
+            Ok(Some(x11rb::protocol::Event::KeyPress(event))) if event.event == fixture.window => {
+                let chunk_index = usize::from(event.detail.saturating_sub(min));
+                let chunk = &mapping.keysyms[chunk_index * per_keycode..(chunk_index + 1) * per_keycode];
+                let is_shifted = event.state.contains(x11rb::protocol::xproto::KeyButMask::SHIFT);
+                let keysym = if is_shifted && chunk.len() > 1 && chunk[1] != 0 {
+                    chunk[1]
+                } else {
+                    chunk.first().copied().unwrap_or(0)
+                };
+                let sym = xkeysym::Keysym::new(keysym);
+                if sym.is_modifier_key() {
+                    continue;
+                }
+                if let Some(ch) = sym.key_char() {
+                    received.push(ch);
+                }
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(error) => panic!("event polling failed: {error}"),
+        }
+    }
+    assert_eq!(received, input_text, "window received characters must match input text exactly");
+}
+
+#[test]
+#[ignore = "needs Xvfb; run with DSH_CUA_XVFB_TEST=1 cargo test --test xvfb_window2 -- --ignored --test-threads=1"]
 fn the_window2_surface_answers_its_methods_over_a_live_x_server() {
     if skip_if_disabled() {
         return;
