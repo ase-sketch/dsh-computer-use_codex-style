@@ -332,9 +332,14 @@ async fn run_interruptible(
     if let Some(refusal) = surface_guard(&call_id, &tool_name) {
         return vec![refusal];
     }
+    // A call carries the surface it belongs to when the turn is on a window2 face, so a
+    // name that both surfaces define (list_apps/click/press_key/type_text/scroll) resolves
+    // to the window2 handler there instead of the P1 sky.window one. With no tag the old
+    // routing stands, which keeps a P1 host bit-for-bit compatible.
+    let call_surface = protocol::json_str(params, "surface");
     // The window2 surface has its own dispatcher: its handlers must not go through the
     // crate's MCP router, which knows nothing about window-relative coordinates.
-    if is_window2_native_call(&tool_name) {
+    if is_window2_native_call(&tool_name, call_surface.as_deref()) {
         let dispatched = tool_name.clone();
         let outcome = tokio::task::spawn_blocking(move || {
             crate::x11::window2::dispatch(&dispatched, arguments)
@@ -483,14 +488,29 @@ fn is_surface_tool(name: &str) -> bool {
 
 /// Whether this name has to be sent to the native window2 dispatcher.
 ///
-/// The seven sky.window tools keep their P1 handlers even where a window2 method shares
-/// the name: the sidecar does not tag `call` requests with a surface (only `tools` is
-/// tagged, see `src/sidecar.js`), so a name carried by both must resolve the same way it
-/// did before window2 existed. The window2-only names are the eight the P1 surface does
-/// not define, and those are routed natively because the crate's MCP router has no
-/// window-relative coordinate handling.
-fn is_window2_native_call(name: &str) -> bool {
-    crate::x11::window2::WINDOW2_TOOLS.contains(&name) && !SURFACE_TOOLS.contains(&name)
+/// The eight window2-only names always go native: the P1 surface does not define them,
+/// and the crate's MCP router has no window-relative coordinate handling.
+///
+/// The five names both surfaces carry (`click`, `press_key`, `type_text`, `scroll`,
+/// `drag`) are decided by the call's own `surface` tag. `window2`/`computer`/`windows`
+/// mean the turn is on a window2 face, where those calls arrive in the window2 parameter
+/// shape (a window object plus an element_index), so they must reach the window2 handler;
+/// `sky.window`/`linux` and an absent tag mean a P1 caller, whose parameter shape is the
+/// crate's own, so the name keeps its P1 handler. That preserves the P1 contract exactly
+/// while letting a window2 turn address a real window. See `src/sidecar.js`, which is
+/// what tags the request.
+fn is_window2_native_call(name: &str, call_surface: Option<&str>) -> bool {
+    if !crate::x11::window2::WINDOW2_TOOLS.contains(&name) {
+        return false;
+    }
+    if !SURFACE_TOOLS.contains(&name) {
+        // A window2-only name has no P1 handler to fall back to.
+        return true;
+    }
+    // A shared name follows the surface the caller declared for this call. The tag is
+    // normalised here so this predicate is correct on its own, whatever case the host uses.
+    let surface = call_surface.map(str::to_ascii_lowercase);
+    surface.as_deref().is_some_and(is_window2_surface)
 }
 
 /// Which surface a `tools`/`health` request is asking about.
@@ -1110,10 +1130,10 @@ mod tests {
     }
 
     #[test]
-    fn a_name_on_both_surfaces_keeps_its_sky_window_handler() {
-        // The sidecar tags only the tools method with a surface, never call, so a shared
-        // name has to resolve the way it did before window2 existed. Only the names the
-        // P1 surface does not define are rerouted to the native dispatcher.
+    fn a_name_on_both_surfaces_follows_the_call_surface() {
+        // Without a surface tag a shared name has to resolve the way it did before
+        // window2 existed, and a P1 tag must keep saying the same thing. Only a window2
+        // tag reroutes the five shared names to the native dispatcher.
         let shared: Vec<&str> = crate::x11::window2::WINDOW2_TOOLS
             .iter()
             .copied()
@@ -1121,16 +1141,50 @@ mod tests {
             .collect();
         assert_eq!(shared.len(), 5, "expected the five shared names");
         for name in &shared {
-            assert!(!is_window2_native_call(name), "{name} must keep the sky.window handler");
-        }
-        for name in crate::x11::window2::WINDOW2_TOOLS {
-            if !SURFACE_TOOLS.contains(name) {
+            assert!(
+                !is_window2_native_call(name, None),
+                "{name} must keep the sky.window handler when the call is untagged"
+            );
+            for p1 in ["sky.window", "linux"] {
                 assert!(
-                    is_window2_native_call(name),
-                    "{name} is window2-only and must be routed natively"
+                    !is_window2_native_call(name, Some(p1)),
+                    "{name} must keep the sky.window handler on surface={p1}"
+                );
+            }
+            for window2 in ["window2", "computer", "windows", "all", "COMPUTER"] {
+                assert!(
+                    is_window2_native_call(name, Some(window2)),
+                    "{name} must go to the window2 dispatcher on surface={window2}"
                 );
             }
         }
+        for name in crate::x11::window2::WINDOW2_TOOLS {
+            if !SURFACE_TOOLS.contains(name) {
+                // A window2-only name has no P1 handler, so it goes native on every
+                // surface, including an absent tag.
+                for surface in [None, Some("sky.window"), Some("linux"), Some("computer")] {
+                    assert!(
+                        is_window2_native_call(name, surface),
+                        "{name} is window2-only and must be routed natively"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_window2_tag_reroutes_only_the_methods_window2_can_serve() {
+        // The tag must not become a hole in the P1 guard: a name neither surface defines
+        // is still refused, and a `call` that carries a surface it cannot serve keeps the
+        // guard's own wording.
+        assert!(surface_guard(&json!(1), "get_app_state").is_none());
+        assert!(!is_window2_native_call("get_app_state", Some("computer")));
+        assert!(!is_window2_native_call("screenshot", Some("computer")));
+        assert!(!is_window2_native_call("move_window", Some("computer")));
+        assert_eq!(
+            surface_guard(&json!(2), "move_window").expect("refused")["error"],
+            json!("unsupported method: move_window")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

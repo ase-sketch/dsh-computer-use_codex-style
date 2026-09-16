@@ -7,7 +7,7 @@ import { Context } from '@deepseek-ai/cordis'
 import ComputerUseService, { Config as HostConfig } from '../src/index.js'
 import { Config as ToolConfig, apply as applyTools } from '../src/tool.js'
 import { nativeHelperCandidates } from '../src/paths.js'
-import { Sidecar, usesPython, pythonCatalog, LINUX_CALLS, WINDOW2_CALLS } from '../src/sidecar.js'
+import { Sidecar, usesPython, pythonCatalog, LINUX_CALLS, WINDOW2_CALLS, callParamsFor, isWindow2Surface } from '../src/sidecar.js'
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const stubHelper = path.join(pluginRoot, 'scripts', 'stub-linux-helper.mjs')
@@ -417,6 +417,144 @@ test('P2-E2E-SMOKE-WINDOW2 sidecar end-to-end window2 surface with stub-linux-he
     })
     assert.equal(act.ok, true)
     assert.equal(act.value.action, 'activate_window')
+  } finally {
+    await sidecar.request('shutdown').catch(() => {})
+    sidecar.dispose()
+    if (origEnv !== undefined) process.env.DSH_COMPUTER_USE_HELPER = origEnv
+    else delete process.env.DSH_COMPUTER_USE_HELPER
+  }
+})
+
+
+// The five names both surfaces define. `drag`/`set_value`/... are window2-only and never
+// collide, so only these five need a surface tag to resolve unambiguously.
+const SHARED_CALL_NAMES = ['list_apps', 'click', 'press_key', 'type_text', 'scroll']
+// The four of those that return an object carrying an explicit handler marker. `list_apps`
+// answers with an array on both faces, so it is asserted through its shape instead.
+const SHARED_OBJECT_CALLS = ['click', 'press_key', 'type_text', 'scroll']
+
+test('P2-CALL-SURFACE callParamsFor tags only window2 turns and leaves P1 untouched', () => {
+  const call = { name: 'click', arguments: { window: { id: 101 }, element_index: 1 } }
+
+  // A window2 turn declares itself, so the helper can route the shared name natively.
+  for (const surface of ['computer', 'windows', 'window2']) {
+    assert.deepEqual(
+      callParamsFor('call', call, { backend: 'linux', surface }),
+      { ...call, surface: 'computer' },
+      'surface=' + surface + ' must tag the call',
+    )
+  }
+
+  // `all` is a union, not a face: on Linux it means window2 unless P1's linux was pinned,
+  // which is exactly how listTools resolves it.
+  assert.deepEqual(callParamsFor('call', call, { backend: 'linux', surface: 'all' }), { ...call, surface: 'computer' })
+  assert.deepEqual(callParamsFor('call', {}, { backend: 'linux' }), {})
+
+  // P1 callers keep the request shape they always sent: no new field at all.
+  for (const config of [
+    { backend: 'linux', surface: 'linux' },
+    { backend: 'linux', surface: 'sky.window' },
+    { backend: 'linux' },
+    { backend: 'windows', surface: 'computer' },
+    { backend: 'fake', surface: 'computer' },
+  ]) {
+    assert.deepEqual(callParamsFor('call', call, config), call, JSON.stringify(config) + ' must not tag')
+  }
+
+  // An explicit tag on the request is the caller's own declaration and wins.
+  assert.deepEqual(
+    callParamsFor('call', { ...call, surface: 'linux' }, { backend: 'linux', surface: 'computer' }),
+    { ...call, surface: 'linux' },
+  )
+
+  // Only `call` is tagged: `tools` already carries its own surface and must not be rewritten.
+  assert.deepEqual(callParamsFor('tools', { surface: 'all' }, { backend: 'linux', surface: 'computer' }), { surface: 'all' })
+  assert.deepEqual(callParamsFor('health', {}, { backend: 'linux', surface: 'computer' }), {})
+})
+
+test('P2-CALL-SURFACE isWindow2Surface names the official face and its host spellings', () => {
+  for (const name of ['computer', 'windows', 'window2', 'COMPUTER', 'Window2']) {
+    assert.equal(isWindow2Surface(name), true, name + ' is the window2 face')
+  }
+  for (const name of ['linux', 'sky.window', 'all', 'desktop', 'browser', '', undefined, null]) {
+    assert.equal(isWindow2Surface(name), false, String(name) + ' is not the window2 face')
+  }
+})
+
+test('P2-CALL-SURFACE-DISPATCH a shared name reaches the window2 handler only when tagged', async () => {
+  const sidecar = new Sidecar({ backend: 'linux', surface: 'computer', engineRoot: pluginRoot })
+  const origEnv = process.env.DSH_COMPUTER_USE_HELPER
+  process.env.DSH_COMPUTER_USE_HELPER = stubHelper
+
+  try {
+    await sidecar.request('tools')
+    // window2 parameter shape: a window object plus an element index.
+    const window2Click = await sidecar.request('call', {
+      name: 'click',
+      arguments: { window: { id: 101, app: 'org.gnome.TextEditor' }, element_index: 3 },
+    })
+    assert.equal(window2Click.ok, true)
+    assert.equal(window2Click.value.handler, 'window2', 'a window2 turn must reach the window2 handler')
+    assert.equal(window2Click.value.element_index, 3, 'the window2 shape must reach the handler intact')
+    assert.equal(window2Click.value.window.id, 101, 'the window2 shape must reach the handler intact')
+
+    for (const name of SHARED_OBJECT_CALLS) {
+      const res = await sidecar.request('call', { name, arguments: { window: { id: 101 } } })
+      assert.equal(res.ok, true, name + ' must answer')
+      assert.equal(res.value.handler, 'window2', name + ' must reach the window2 handler on a window2 turn')
+    }
+
+    // list_apps is the fifth shared name: on window2 it groups windows under each app.
+    const apps = await sidecar.request('call', { name: 'list_apps', arguments: {} })
+    assert.equal(apps.ok, true)
+    assert.ok(Array.isArray(apps.value) && Array.isArray(apps.value[0]?.windows), 'window2 list_apps must group windows under each app')
+  } finally {
+    await sidecar.request('shutdown').catch(() => {})
+    sidecar.dispose()
+    if (origEnv !== undefined) process.env.DSH_COMPUTER_USE_HELPER = origEnv
+    else delete process.env.DSH_COMPUTER_USE_HELPER
+  }
+})
+
+test('P2-CALL-SURFACE-P1-COMPAT an untagged P1 call keeps the sky.window handler', async () => {
+  const sidecar = new Sidecar({ backend: 'linux', surface: 'linux', engineRoot: pluginRoot })
+  const origEnv = process.env.DSH_COMPUTER_USE_HELPER
+  process.env.DSH_COMPUTER_USE_HELPER = stubHelper
+
+  try {
+    await sidecar.request('tools')
+    // The P1 parameter shape: an app id and absolute coordinates, no window object.
+    const click = await sidecar.request('call', {
+      name: 'click',
+      arguments: { app: 'linux-window:101', x: 250, y: 350 },
+    })
+    assert.equal(click.ok, true)
+    assert.equal(click.value.handler, 'sky.window', 'a P1 turn must keep the sky.window handler')
+    assert.equal(click.value.x, 250)
+    assert.equal(click.value.y, 350)
+
+    for (const name of SHARED_OBJECT_CALLS) {
+      const res = await sidecar.request('call', { name, arguments: { app: 'linux-window:101' } })
+      assert.equal(res.ok, true, name + ' must answer')
+      assert.equal(res.value.handler, 'sky.window', name + ' must keep the sky.window handler untagged')
+    }
+
+    // P1 list_apps answers with a flat catalog, not the window2 grouping.
+    const apps = await sidecar.request('call', { name: 'list_apps', arguments: {} })
+    assert.equal(apps.ok, true)
+    assert.equal(apps.value[0].windows, undefined, 'P1 list_apps must not group windows')
+
+    // A window2-only name has no P1 handler, so it goes to the native window2 dispatcher
+    // even on a P1 face. It fails there for want of a window, not with an unsupported
+    // name, which is what proves it reached a window2 handler at all.
+    const drag = await sidecar.request('call', { name: 'drag', arguments: {} }).catch(err => ({ ok: false, error: err.message }))
+    assert.equal(drag.ok, false, 'drag without a window must fail in the window2 handler')
+    assert.match(
+      String(drag.error || drag.value?.error || ''),
+      /window is required/,
+      'drag must be refused by the window2 handler, not as an unknown name',
+    )
+    assert.doesNotMatch(String(drag.error || drag.value?.error || ''), /unsupported method/, 'drag is not an unknown name')
   } finally {
     await sidecar.request('shutdown').catch(() => {})
     sidecar.dispose()

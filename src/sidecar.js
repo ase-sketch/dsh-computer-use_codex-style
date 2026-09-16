@@ -372,6 +372,19 @@ export const WINDOW2_CALLS = new Set([
   'activate_window',
 ])
 
+/**
+ * Whether a surface name denotes the window2 face (the official 13-method surface).
+ *
+ * `windows`/`window2` are the host's other spellings for the same face; `all` is handled
+ * by the caller, which resolves it to a concrete surface first.
+ * @param {string} surface
+ * @returns {boolean}
+ */
+export function isWindow2Surface(surface) {
+  const name = String(surface || '').toLowerCase()
+  return name === 'computer' || name === 'windows' || name === 'window2'
+}
+
 export function pythonCatalog(surface) {
   const name = String(surface || '')
   if (name === 'browser' || name === 'all') return true
@@ -404,6 +417,42 @@ export function mergeToolLists(native, py, surface) {
     deferred: extra.length ? 'python' : native?.deferred,
     disabledMemberIds: py?.disabledMemberIds || native?.disabledMemberIds || [],
   }
+}
+
+/**
+ * Tag a `call` with the surface it belongs to.
+ *
+ * The same physical action can be spelled by both surfaces (`click`, `press_key`,
+ * `type_text`, `scroll`, `list_apps`), and their parameter shapes differ: window2 takes a
+ * window object plus an `element_index`, P1 takes the crate's own app/window form. The
+ * helper cannot tell them apart from the name alone, so a window2 turn declares itself and
+ * the helper routes the name to its native window2 handler. P1 sends no tag and keeps its
+ * handler, so this adds no field for a P1 caller.
+ *
+ * `surface` is an ordinary request parameter, not a new protocol method. The effective
+ * surface is the per-request override the caller passed, else the configured one; `all`
+ * resolves the way `listTools` resolves it, because `all` is not itself a face.
+ * @param {string} method
+ * @param {object} params
+ * @param {object} config
+ * @returns {object}
+ */
+export function callParamsFor(method, params, config = {}) {
+  if (method !== 'call' || !params || typeof params !== 'object') return params
+  // An explicit tag on the request always wins; it is the caller's own declaration.
+  if (params.surface !== undefined && params.surface !== '') return params
+  const backend = String(config.backend || '').toLowerCase()
+  // Only the Linux helper has two faces to disambiguate; every other backend keeps its
+  // request shape untouched.
+  if (backend !== 'linux') return params
+  let surface = String(config.surface || '').toLowerCase()
+  if (surface === 'all') {
+    // `all` is a union, not a face: it means the window2 face unless the config pinned
+    // P1's `linux`, which is the same resolution `listTools` uses.
+    surface = config.surface === 'linux' ? 'linux' : 'computer'
+  }
+  if (!isWindow2Surface(surface)) return params
+  return { ...params, surface: 'computer' }
 }
 
 export class Sidecar {
@@ -728,7 +777,7 @@ export class Sidecar {
       // on the helper process. Calling it on `session` threw a TypeError and made
       // every Computer Use tool call fail before it ever reached the helper.
       if (method === 'call') await this.ensureTurn(params?.meta || {}, timeoutMs)
-      return session.rawRequest(method, params, signal, timeoutMs, undefined, keepAlive)
+      return session.rawRequest(method, callParamsFor(method, params, this.config), signal, timeoutMs, undefined, keepAlive)
     }
     const task = this.chain.then(run, run)
     this.chain = task.then(() => undefined, () => undefined)

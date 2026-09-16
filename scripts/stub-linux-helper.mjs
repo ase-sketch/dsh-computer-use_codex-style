@@ -317,12 +317,46 @@ const DUMMY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQV
 
 let currentSurface = process.env.DSH_COMPUTER_USE_SURFACE || 'linux'
 
-function handleCall(name, args = {}, surface = 'linux') {
-  if (surface === 'linux') {
-    const P1_ALLOWED = new Set(['list_apps', 'get_app_state', 'screenshot', 'click', 'scroll', 'press_key', 'type_text'])
-    if (!P1_ALLOWED.has(name)) {
-      throw new Error(`unsupported method: ${name}`)
-    }
+/**
+ * Whether a surface name denotes the window2 face, mirroring `isWindow2Surface` in
+ * src/sidecar.js. A `call` carries `surface` so a name both faces define resolves to the
+ * right handler; an untagged call keeps the P1 behaviour exactly.
+ */
+function isWindow2Surface(surface) {
+  const name = String(surface || '').toLowerCase()
+  return name === 'computer' || name === 'windows' || name === 'window2' || name === 'desktop'
+}
+
+const STUB_P1_ALLOWED = new Set(['list_apps', 'get_app_state', 'screenshot', 'click', 'scroll', 'press_key', 'type_text'])
+// The window2 methods that do not take a window object: `get_window` takes an `id`, and
+// these three take none at all. The other nine refuse a call without one.
+const STUB_NO_WINDOW_NEEDED = new Set(['list_windows', 'list_apps', 'launch_app', 'get_window'])
+// The eight window2 means the P1 surface does not define; they have no P1 handler, so the
+// helper routes them natively whatever the call says.
+const STUB_WINDOW2_ONLY = new Set([
+  'list_windows',
+  'get_window',
+  'launch_app',
+  'get_window_state',
+  'set_value',
+  'drag',
+  'perform_secondary_action',
+  'activate_window',
+])
+
+function handleCall(name, args = {}, callSurface = undefined) {
+  // Mirrors `is_window2_native_call` in helper-linux/src/helper.rs: a window2-only name
+  // always goes native, a name both faces define follows the call's own `surface` tag,
+  // and an untagged call is a P1 call -- the helper carries no surface between requests.
+  const window2 = STUB_WINDOW2_ONLY.has(name) || isWindow2Surface(callSurface)
+  if (!window2 && !STUB_P1_ALLOWED.has(name)) {
+    throw new Error(`unsupported method: ${name}`)
+  }
+  // Every window2 handler but these three takes a window object, and the real dispatcher
+  // refuses the call before it looks at anything else. Mirroring that is what lets a test
+  // tell "reached the window2 handler" apart from "was never routed there".
+  if (window2 && !STUB_NO_WINDOW_NEEDED.has(name) && (!args.window || typeof args.window !== 'object')) {
+    throw new Error('window is required and must be a Window object from list_windows()')
   }
 
   switch (name) {
@@ -344,7 +378,7 @@ function handleCall(name, args = {}, surface = 'linux') {
         images: [],
       }
     case 'list_apps':
-      if (surface === 'computer') {
+      if (window2) {
         return {
           value: [
             {
@@ -478,6 +512,7 @@ function handleCall(name, args = {}, surface = 'linux') {
           app: args.app || (args.window ? args.window.app : 'linux-window:101'),
           window: args.window,
           element_index: args.element_index,
+          handler: window2 ? 'window2' : 'sky.window',
           x: args.x ?? 100,
           y: args.y ?? 200,
         },
@@ -490,6 +525,7 @@ function handleCall(name, args = {}, surface = 'linux') {
           action: 'scroll',
           app: args.app || (args.window ? args.window.app : 'linux-window:101'),
           window: args.window,
+          handler: window2 ? 'window2' : 'sky.window',
           direction: args.direction || 'down',
           scrollX: args.scrollX,
           scrollY: args.scrollY,
@@ -504,6 +540,7 @@ function handleCall(name, args = {}, surface = 'linux') {
           action: 'press_key',
           app: args.app || (args.window ? args.window.app : 'linux-window:101'),
           window: args.window,
+          handler: window2 ? 'window2' : 'sky.window',
           key: args.key || 'Return',
         },
         images: [],
@@ -515,6 +552,7 @@ function handleCall(name, args = {}, surface = 'linux') {
           action: 'type_text',
           app: args.app || (args.window ? args.window.app : 'linux-window:101'),
           window: args.window,
+          handler: window2 ? 'window2' : 'sky.window',
           text: args.text || '',
         },
         images: [],
@@ -574,7 +612,9 @@ rl.on('line', line => {
     if (method === 'call') {
       const toolName = params?.name
       const toolArgs = params?.arguments || {}
-      const res = handleCall(toolName, toolArgs, currentSurface)
+      // A call may carry its own surface (the sidecar tags a window2 turn). An untagged
+      // call is a P1 call; nothing is remembered from an earlier `tools` request.
+      const res = handleCall(toolName, toolArgs, params?.surface)
       console.log(JSON.stringify({
         id,
         ok: true,
