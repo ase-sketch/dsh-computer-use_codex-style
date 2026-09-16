@@ -12,6 +12,13 @@ helper-rs/target/
 *.pdb
 *.dSYM/
 
+# --- Linux Rust helper build output (helper-linux/) -----------------------
+# The Linux helper is built from helper-linux/ with the same `cargo build`; only its build
+# cache is ignored. Nothing is committed under bin/ for Linux: the JS side reads
+# helper-linux/target/{release,debug}/dsh-computer-use, so a checkout without a Rust
+# toolchain has no Linux helper until one is built.
+helper-linux/target/
+
 # --- Python engine ---------------------------------------------------------
 __pycache__/
 *.pyc
