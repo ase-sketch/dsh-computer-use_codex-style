@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-09-16T13:07:54.841317+00:00",
+  "timestamp": "2026-09-16T13:50:53.007617+00:00",
   "status": "PASS",
   "environment": {
     "display": ":99",
@@ -34,7 +34,7 @@
   "tools_7_status": {
     "list_apps": {
       "ok": true,
-      "apps_count": 43,
+      "apps_count": 42,
       "accessible_apps_count": 13,
       "accessibility_error": null
     },
@@ -50,12 +50,12 @@
     "screenshot": {
       "ok": true,
       "source": "xdg-desktop-portal",
-      "width": 1437,
-      "height": 897,
-      "bytes": 1688662,
+      "width": 1920,
+      "height": 1200,
+      "bytes": 810814,
       "format": "png",
       "has_image": true,
-      "base64_chars": 2251552
+      "base64_chars": 1081088
     },
     "click": {
       "ok": true,
@@ -123,7 +123,7 @@
       "platform.gnome_shell_version: No such file or directory (os error 2)",
       "portals.mutter_remote_desktop: Failed to get credentials: No such device or address",
       "portals.mutter_screencast: Failed to get credentials: No such device or address",
-      "windowing.backends.cosmic-wayland: /mnt/e/dsh-computer-use-linux/wt-p2-harness/helper-linux/target/debug/codex-computer-use-cosmic probe failed: Error: failed to connect to Wayland display\n\nCaused by:\n    Could not find wayland compositor",
+      "windowing.backends.cosmic-wayland: /mnt/e/dsh-computer-use-linux/upstream-plugin/helper-linux/target/debug/codex-computer-use-cosmic probe failed: Error: failed to connect to Wayland display\n\nCaused by:\n    Could not find wayland compositor",
       "windowing.backends.gnome-shell-extension: Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name com.openai.Codex.WindowControl was not provided by any .service files",
       "windowing.backends.gnome-shell-introspect: Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gnome.Shell was not provided by any .service files",
       "windowing.backends.hyprland: HYPRLAND_INSTANCE_SIGNATURE not set! (is hyprland running?)",
@@ -132,7 +132,7 @@
       "windowing.backends.x11: wmctrl unavailable: failed to probe X11 windows",
       "windowing.codex_gnome_shell_extension: Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name com.openai.Codex.WindowControl was not provided by any .service files",
       "windowing.codex_gnome_shell_extension_screenshot: Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name com.openai.Codex.WindowControl was not provided by any .service files",
-      "windowing.cosmic_helper: /mnt/e/dsh-computer-use-linux/wt-p2-harness/helper-linux/target/debug/codex-computer-use-cosmic probe failed: Error: failed to connect to Wayland display\n\nCaused by:\n    Could not find wayland compositor",
+      "windowing.cosmic_helper: /mnt/e/dsh-computer-use-linux/upstream-plugin/helper-linux/target/debug/codex-computer-use-cosmic probe failed: Error: failed to connect to Wayland display\n\nCaused by:\n    Could not find wayland compositor",
       "windowing.gnome_shell_introspect: Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gnome.Shell was not provided by any .service files",
       "windowing.hyprland: HYPRLAND_INSTANCE_SIGNATURE not set! (is hyprland running?)",
       "windowing.niri: No such file or directory (os error 2)"
