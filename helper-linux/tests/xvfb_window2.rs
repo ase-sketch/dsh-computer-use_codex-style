@@ -39,6 +39,42 @@ fn enabled() -> bool {
 /// Xvfb displays are serialized: two servers cannot share a display number.
 static DISPLAY_LOCK: Mutex<()> = Mutex::new(());
 
+fn is_pid_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    let res = unsafe { libc::kill(pid, 0) };
+    if res == 0 {
+        true
+    } else {
+        let err = std::io::Error::last_os_error().raw_os_error();
+        err != Some(libc::ESRCH)
+    }
+}
+
+fn clean_stale_lock(display_number: u32) {
+    let lock_path = format!("/tmp/.X{display_number}-lock");
+    let socket_path = format!("/tmp/.X11-unix/X{display_number}");
+    if !std::path::Path::new(&lock_path).exists() && !std::path::Path::new(&socket_path).exists() {
+        return;
+    }
+
+    let is_alive = if let Ok(content) = std::fs::read_to_string(&lock_path) {
+        if let Ok(pid) = content.trim().parse::<i32>() {
+            is_pid_alive(pid)
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if !is_alive {
+        let _ = std::fs::remove_file(&lock_path);
+        let _ = std::fs::remove_file(&socket_path);
+    }
+}
+
 struct Xvfb {
     child: Child,
     display: String,
@@ -46,10 +82,12 @@ struct Xvfb {
 
 impl Xvfb {
     fn start(display_number: u32) -> Option<Self> {
+        clean_stale_lock(display_number);
+
         let display = format!(":{display_number}");
         // 24-bit depth is what the capture code expects; another depth would test the
         // depth guard rather than the capture itself.
-        let child = Command::new("Xvfb")
+        let mut child = Command::new("Xvfb")
             .arg(&display)
             .args(["-screen", "0", "1280x800x24", "-nolisten", "tcp"])
             .stdout(Stdio::null())
@@ -58,9 +96,11 @@ impl Xvfb {
             .ok()?;
         let deadline = Instant::now() + Duration::from_secs(10);
         let socket = format!("/tmp/.X11-unix/X{display_number}");
-        let lock = format!("/tmp/.X{display_number}-lock");
         while Instant::now() < deadline {
-            if std::path::Path::new(&socket).exists() || std::path::Path::new(&lock).exists() {
+            if let Ok(Some(_)) = child.try_wait() {
+                return None;
+            }
+            if std::path::Path::new(&socket).exists() {
                 // A short further wait so the server accepts connections rather than
                 // merely having created the socket.
                 std::thread::sleep(Duration::from_millis(300));
@@ -68,8 +108,8 @@ impl Xvfb {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        let mut child = child;
         let _ = child.kill();
+        let _ = child.wait();
         None
     }
 }
@@ -78,6 +118,10 @@ impl Drop for Xvfb {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Ok(num) = self.display.trim_start_matches(':').parse::<u32>() {
+            let _ = std::fs::remove_file(format!("/tmp/.X{num}-lock"));
+            let _ = std::fs::remove_file(format!("/tmp/.X11-unix/X{num}"));
+        }
     }
 }
 

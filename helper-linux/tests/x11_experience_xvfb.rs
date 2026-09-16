@@ -32,6 +32,42 @@ const DISPLAY: &str = ":97";
 const SOCKET: &str = "/tmp/.X11-unix/X97";
 const ESCAPE: u8 = 9;
 
+fn is_pid_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    let res = unsafe { libc::kill(pid, 0) };
+    if res == 0 {
+        true
+    } else {
+        let err = std::io::Error::last_os_error().raw_os_error();
+        err != Some(libc::ESRCH)
+    }
+}
+
+fn clean_stale_lock(display_number: u32) {
+    let lock_path = format!("/tmp/.X{display_number}-lock");
+    let socket_path = format!("/tmp/.X11-unix/X{display_number}");
+    if !std::path::Path::new(&lock_path).exists() && !std::path::Path::new(&socket_path).exists() {
+        return;
+    }
+
+    let is_alive = if let Ok(content) = std::fs::read_to_string(&lock_path) {
+        if let Ok(pid) = content.trim().parse::<i32>() {
+            is_pid_alive(pid)
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if !is_alive {
+        let _ = std::fs::remove_file(&lock_path);
+        let _ = std::fs::remove_file(&socket_path);
+    }
+}
+
 /// Owns the Xvfb child so a panic in an assertion cannot leak a server.
 struct Xvfb {
     child: Child,
@@ -42,9 +78,8 @@ impl Xvfb {
         if Command::new("Xvfb").arg("-help").output().is_err() {
             return None;
         }
-        // A socket left behind by a killed run would make the readiness poll lie.
-        let _ = std::fs::remove_file(SOCKET);
-        let child = Command::new("Xvfb")
+        clean_stale_lock(97);
+        let mut child = Command::new("Xvfb")
             .args([DISPLAY, "-screen", "0", "1280x800x24", "-nolisten", "tcp"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -52,11 +87,16 @@ impl Xvfb {
             .expect("spawn Xvfb");
         let deadline = Instant::now() + Duration::from_secs(15);
         while Instant::now() < deadline {
+            if let Ok(Some(_)) = child.try_wait() {
+                return None;
+            }
             if Path::new(SOCKET).exists() {
                 return Some(Xvfb { child });
             }
             std::thread::sleep(Duration::from_millis(50));
         }
+        let _ = child.kill();
+        let _ = child.wait();
         panic!("Xvfb {DISPLAY} never created {SOCKET}");
     }
 }
@@ -65,6 +105,8 @@ impl Drop for Xvfb {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = std::fs::remove_file(SOCKET);
+        let _ = std::fs::remove_file("/tmp/.X97-lock");
     }
 }
 

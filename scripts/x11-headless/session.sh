@@ -89,7 +89,18 @@ SOCKET_PATH="/tmp/.X11-unix/X${XVFB_NUM}"
 LOCK_PATH="/tmp/.X${XVFB_NUM}-lock"
 
 if [ -e "$SOCKET_PATH" ] || [ -e "$LOCK_PATH" ]; then
-  if command -v xdpyinfo >/dev/null 2>&1 && xdpyinfo -display "$XVFB_DISPLAY" >/dev/null 2>&1; then
+  ACTIVE=0
+  if [ -f "$LOCK_PATH" ]; then
+    LOCK_PID=$(tr -cd '0-9' < "$LOCK_PATH" 2>/dev/null || true)
+    if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+      ACTIVE=1
+    fi
+  fi
+  if [ "$ACTIVE" -eq 0 ] && command -v xdpyinfo >/dev/null 2>&1 && xdpyinfo -display "$XVFB_DISPLAY" >/dev/null 2>&1; then
+    ACTIVE=1
+  fi
+
+  if [ "$ACTIVE" -eq 1 ]; then
     echo "[x11-headless] Error: Display $XVFB_DISPLAY is already in use by another active X server." >&2
     exit 98
   else
