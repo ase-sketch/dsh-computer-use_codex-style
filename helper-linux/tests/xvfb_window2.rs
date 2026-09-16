@@ -682,16 +682,6 @@ fn the_window2_surface_answers_its_methods_over_a_live_x_server() {
         parsed["screenshots"][0]["method"],
         serde_json::json!("composite")
     );
-
-    // launch_app refuses structurally instead of pretending to have launched something.
-    let mut launch = serde_json::Map::new();
-    launch.insert("app".to_string(), serde_json::json!("code"));
-    let error = with_display(&fixture, || {
-        dsh_computer_use::x11::window2::dispatch("launch_app", launch)
-    })
-    .expect_err("launch_app must refuse");
-    let parsed: serde_json::Value = serde_json::from_str(&error).expect("a structured refusal");
-    assert_eq!(parsed["error"], serde_json::json!("unsupported"));
 }
 
 /// The failure mode a real session actually hits: something else already owns the
@@ -798,6 +788,442 @@ fn element_indexes_are_stable_within_one_observation() {
     // real toolkit app on a session bus and belongs to the real-session verification pass.
     // The index cache's own behaviour — refusing an index with no snapshot, and refusing an
     // index outside the captured tree — is covered by unit tests in src/x11/element.rs.
+}
+
+
+// ---------------------------------------------------------------------------------------
+// launch_app
+//
+// These tests drive the real launcher: they point XDG_DATA_HOME at a temporary directory,
+// write a desktop entry for a real xterm, and let the helper resolve, spawn and wait the
+// same way it does on a live desktop. The X server is the private Xvfb this file starts, so
+// nothing here touches the operator's session.
+//
+// The desktop entry is what makes the test hermetic. XDG_DATA_HOME is the first root in the
+// search order, so a temporary entry both supplies the app under test and shadows any
+// system entry of the same name.
+// ---------------------------------------------------------------------------------------
+
+/// A desktop entry written into a private XDG_DATA_HOME.
+struct LaunchHome {
+    root: std::path::PathBuf,
+    previous_home: Option<String>,
+    previous_dirs: Option<String>,
+}
+
+impl LaunchHome {
+    /// Create the private share directory and write one entry.
+    ///
+    /// The entry names an xterm whose WM_CLASS is set explicitly, so the window the helper
+    /// has to find is unambiguous even when other clients are connected.
+    fn new(tag: &str, wm_class: &str, exec: &str) -> Self {
+        use std::io::Write as _;
+        let root = std::env::temp_dir().join(format!(
+            "cua-launch-{tag}-{}-{}",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        let applications = root.join("applications");
+        std::fs::create_dir_all(&applications).expect("create the private XDG_DATA_HOME");
+        let entry = format!(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name={tag}\n\
+             Exec={exec}\n\
+             StartupWMClass={wm_class}\n"
+        );
+        let mut file = std::fs::File::create(applications.join(format!("{tag}.desktop")))
+            .expect("write the desktop entry");
+        file.write_all(entry.as_bytes()).unwrap();
+
+        let previous_home = std::env::var("XDG_DATA_HOME").ok();
+        let previous_dirs = std::env::var("XDG_DATA_DIRS").ok();
+        std::env::set_var("XDG_DATA_HOME", &root);
+        // No system roots: resolution must come from the entry just written, so a system
+        // app that happens to share the name cannot make a failing test pass.
+        std::env::set_var("XDG_DATA_DIRS", "/nonexistent-cua-test-root");
+        Self {
+            root,
+            previous_home,
+            previous_dirs,
+        }
+    }
+}
+
+impl Drop for LaunchHome {
+    fn drop(&mut self) {
+        match self.previous_home.take() {
+            Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+        match self.previous_dirs.take() {
+            Some(value) => std::env::set_var("XDG_DATA_DIRS", value),
+            None => std::env::remove_var("XDG_DATA_DIRS"),
+        }
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// The window2 launch call, as JSON.
+fn launch_call(app: &str) -> Result<serde_json::Value, String> {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("app".to_string(), serde_json::json!(app));
+    let result = dsh_computer_use::x11::window2::dispatch("launch_app", arguments)?;
+    let text = result
+        .content
+        .first()
+        .and_then(|content| content.as_text())
+        .map(|text| text.text.clone())
+        .unwrap_or_default();
+    serde_json::from_str(&text).map_err(|error| format!("launch_app must answer JSON: {error}"))
+}
+
+/// Every window whose WM_CLASS *instance* is this exact name.
+///
+/// The instance is the half of WM_CLASS that an application sets for itself: xterm's
+/// -name writes it, while the class half stays "XTerm" for every xterm ever started. It is
+/// therefore the only part of the pair that can identify one test's app.
+fn windows_with_instance(display: &str, instance: &str) -> Vec<u32> {
+    let (connection, _screen) = x11rb::connect(Some(display)).expect("connect to Xvfb");
+    let root = connection.setup().roots[0].root;
+    let tree = connection.query_tree(root).unwrap().reply().unwrap();
+    let class_atom = connection
+        .intern_atom(false, b"WM_CLASS")
+        .unwrap()
+        .reply()
+        .unwrap()
+        .atom;
+    let mut found = Vec::new();
+    for window in tree.children {
+        let Ok(reply) = connection
+            .get_property(false, window, class_atom, x11rb::protocol::xproto::AtomEnum::ANY, 0, 1024)
+            .unwrap()
+            .reply()
+        else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&reply.value);
+        // WM_CLASS is two NUL-terminated strings: instance first, then class.
+        if text.split('\0').next().is_some_and(|part| part == instance) {
+            found.push(window);
+        }
+    }
+    found
+}
+
+/// The pid that owns a window, from _NET_WM_PID.
+fn window_pid(display: &str, window: u32) -> Option<u32> {
+    let (connection, _screen) = x11rb::connect(Some(display)).expect("connect to Xvfb");
+    let atom = connection
+        .intern_atom(false, b"_NET_WM_PID")
+        .unwrap()
+        .reply()
+        .unwrap()
+        .atom;
+    let reply = connection
+        .get_property(false, window, atom, x11rb::protocol::xproto::AtomEnum::CARDINAL, 0, 16)
+        .unwrap()
+        .reply()
+        .unwrap();
+    reply.value32().and_then(|mut values| values.next())
+}
+
+/// Kill every process whose command line carries this marker, so a failed assertion cannot
+/// leak an xterm into the operator's session.
+fn kill_marked(marker: &str) {
+    let _ = Command::new("pkill").arg("-f").arg(marker).status();
+}
+
+#[test]
+#[ignore = "needs Xvfb; run with DSH_CUA_XVFB_TEST=1 cargo test --test xvfb_window2 -- --ignored --test-threads=1"]
+fn launch_app_starts_an_app_waits_for_its_window_and_focuses_it() {
+    if skip_if_disabled() {
+        return;
+    }
+    let Some(fixture) = fixture(130) else {
+        eprintln!("skipping: Xvfb could not be started on :130");
+        return;
+    };
+    // A marker unique to this test, so cleanup can never match an operator process.
+    let marker = format!("cua-launch-{}", std::process::id());
+    let class = format!("CuaLaunch{}", std::process::id());
+    let home = LaunchHome::new(
+        "cua-launch-app",
+        &class,
+        &format!("xterm -name {marker} -T {marker} -e sleep 120"),
+    );
+
+    let result = with_display(&fixture, || launch_call("cua-launch-app"));
+    let parsed = match result {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            kill_marked(&marker);
+            panic!("launch_app must succeed: {error}");
+        }
+    };
+
+    assert_eq!(parsed["launched"], serde_json::json!(true));
+    assert_eq!(parsed["alreadyRunning"], serde_json::json!(false));
+    assert_eq!(parsed["app"]["source"], serde_json::json!(format!(
+        "desktop:{}/applications/cua-launch-app.desktop",
+        home.root.display()
+    )));
+    let window = parsed["window"].as_object().expect("the window must be reported");
+    let id = window["id"].as_u64().expect("a window id");
+    assert!(
+        parsed["detail"]["wmInstance"]
+            .as_str()
+            .unwrap_or_default()
+            .eq_ignore_ascii_case(&marker),
+        "the reported window must be the launched app's: {}",
+        parsed["detail"]["wmInstance"]
+    );
+
+    // The window exists on the server, exactly once.
+    let windows = windows_with_instance(&fixture.server.display, &marker);
+    assert_eq!(windows.len(), 1, "one instance, one window: {windows:?}");
+    assert_eq!(u64::from(windows[0]), id);
+
+    // It was focused: the launcher must hand the app the foreground rather than leave it
+    // behind whatever window happened to have focus. With no window manager on Xvfb the
+    // activation falls back to XSetInputFocus, which the server reports back directly.
+    let (connection, _screen) = x11rb::connect(Some(&fixture.server.display)).unwrap();
+    let focus = connection.get_input_focus().unwrap().reply().unwrap();
+    assert_eq!(
+        u32::from(focus.focus),
+        windows[0],
+        "the launched window must be focused"
+    );
+
+    // The app is a live process of its own, not something this test process has to reap.
+    let pid = window_pid(&fixture.server.display, windows[0]).expect("the app sets _NET_WM_PID");
+    assert!(
+        dsh_computer_use::x11::launch::process_group(pid).is_some(),
+        "the launched app must be a live process"
+    );
+
+    kill_marked(&marker);
+    drop(home);
+}
+
+#[test]
+#[ignore = "needs Xvfb; run with DSH_CUA_XVFB_TEST=1 cargo test --test xvfb_window2 -- --ignored --test-threads=1"]
+fn a_second_launch_of_a_running_app_raises_it_instead_of_starting_another() {
+    if skip_if_disabled() {
+        return;
+    }
+    let Some(fixture) = fixture(131) else {
+        eprintln!("skipping: Xvfb could not be started on :131");
+        return;
+    };
+    let marker = format!("cua-dedupe-{}", std::process::id());
+    let class = format!("CuaDedupe{}", std::process::id());
+    let home = LaunchHome::new(
+        "cua-dedupe-app",
+        &class,
+        &format!("xterm -name {marker} -T {marker} -e sleep 120"),
+    );
+
+    // First launch: a real spawn.
+    let first = with_display(&fixture, || launch_call("cua-dedupe-app"));
+    let first = match first {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            kill_marked(&marker);
+            panic!("the first launch must succeed: {error}");
+        }
+    };
+    assert_eq!(first["launched"], serde_json::json!(true));
+    let first_id = first["window"]["id"].as_u64().expect("a window id");
+    assert_eq!(windows_with_instance(&fixture.server.display, &marker).len(), 1);
+
+    // Second launch: the running instance must be raised and nothing spawned. This is the
+    // whole reason launch_app exists: a second instance is the failure this prevents.
+    let second = with_display(&fixture, || launch_call("cua-dedupe-app"));
+    let second = match second {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            kill_marked(&marker);
+            panic!("the second launch must be answered, not refused: {error}");
+        }
+    };
+    assert_eq!(
+        second["launched"],
+        serde_json::json!(false),
+        "a second launch must not report a new instance: {second}"
+    );
+    assert_eq!(second["alreadyRunning"], serde_json::json!(true));
+    assert_eq!(
+        second["window"]["id"].as_u64(),
+        Some(first_id),
+        "the same window must come back"
+    );
+    assert!(
+        second["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("running instance")),
+        "the note must say what happened: {}",
+        second["note"]
+    );
+    assert_eq!(
+        windows_with_instance(&fixture.server.display, &marker).len(),
+        1,
+        "no second instance may have been started"
+    );
+
+    kill_marked(&marker);
+    drop(home);
+}
+
+#[test]
+#[ignore = "needs Xvfb; run with DSH_CUA_XVFB_TEST=1 cargo test --test xvfb_window2 -- --ignored --test-threads=1"]
+fn an_app_that_cannot_be_resolved_is_refused_structurally() {
+    if skip_if_disabled() {
+        return;
+    }
+    let Some(fixture) = fixture(132) else {
+        eprintln!("skipping: Xvfb could not be started on :132");
+        return;
+    };
+    let home = LaunchHome::new("cua-present-app", "CuaPresent", "/bin/true");
+
+    let error = with_display(&fixture, || {
+        launch_call("definitely-not-installed-app-xyz-42")
+    })
+    .expect_err("an unresolvable app must be refused");
+    let parsed: serde_json::Value = serde_json::from_str(&error).expect("a structured refusal");
+    assert_eq!(parsed["error"], serde_json::json!("unsupported"));
+    assert_eq!(parsed["method"], serde_json::json!("launch_app"));
+    assert!(
+        parsed["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("definitely-not-installed-app-xyz-42")),
+        "the refusal must name what was asked for: {}",
+        parsed["reason"]
+    );
+    assert!(
+        parsed["alternative"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty()),
+        "a refusal always names a way forward"
+    );
+
+    // A near miss is offered as a hint, which is what lets the model correct itself
+    // instead of guessing again.
+    let near = with_display(&fixture, || launch_call("cua-present"))
+        .expect("a partial name resolves to the entry that exists");
+    assert_eq!(near["launched"], serde_json::json!(true));
+    drop(home);
+}
+
+#[test]
+#[ignore = "needs Xvfb; run with DSH_CUA_XVFB_TEST=1 cargo test --test xvfb_window2 -- --ignored --test-threads=1"]
+fn a_launch_that_never_produces_a_window_reports_that_honestly() {
+    if skip_if_disabled() {
+        return;
+    }
+    let Some(fixture) = fixture(133) else {
+        eprintln!("skipping: Xvfb could not be started on :133");
+        return;
+    };
+    // A program that runs forever without ever creating a window.
+    let marker = format!("cua-timeout-{}", std::process::id());
+    let home = LaunchHome::new(
+        "cua-timeout-app",
+        "CuaTimeout",
+        &format!("sh -c 'sleep 120 # {marker}'"),
+    );
+
+    let previous = std::env::var("DSH_CUA_LAUNCH_TIMEOUT_MS").ok();
+    std::env::set_var("DSH_CUA_LAUNCH_TIMEOUT_MS", "1500");
+    let result = with_display(&fixture, || launch_call("cua-timeout-app"));
+    match previous {
+        Some(value) => std::env::set_var("DSH_CUA_LAUNCH_TIMEOUT_MS", value),
+        None => std::env::remove_var("DSH_CUA_LAUNCH_TIMEOUT_MS"),
+    }
+
+    let parsed = match result {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            kill_marked(&marker);
+            panic!("a launch without a window is not a failure: {error}");
+        }
+    };
+    assert_eq!(
+        parsed["launched"],
+        serde_json::json!(true),
+        "the program did start, so launched must be true"
+    );
+    assert_eq!(
+        parsed["window"],
+        serde_json::Value::Null,
+        "no window may be invented"
+    );
+    assert!(
+        parsed["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("1500") && note.contains("still")),
+        "the note must say the app may still be starting: {}",
+        parsed["note"]
+    );
+
+    kill_marked(&marker);
+    drop(home);
+}
+
+#[test]
+#[ignore = "needs Xvfb; run with DSH_CUA_XVFB_TEST=1 cargo test --test xvfb_window2 -- --ignored --test-threads=1"]
+fn a_launched_app_outlives_the_caller_because_it_is_detached() {
+    if skip_if_disabled() {
+        return;
+    }
+    let Some(fixture) = fixture(134) else {
+        eprintln!("skipping: Xvfb could not be started on :134");
+        return;
+    };
+    let marker = format!("cua-detach-{}", std::process::id());
+    let class = format!("CuaDetach{}", std::process::id());
+    let home = LaunchHome::new(
+        "cua-detach-app",
+        &class,
+        &format!("xterm -name {marker} -T {marker} -e sleep 120"),
+    );
+
+    let parsed = with_display(&fixture, || launch_call("cua-detach-app"));
+    let parsed = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            kill_marked(&marker);
+            panic!("the launch must succeed: {error}");
+        }
+    };
+    assert_eq!(parsed["launched"], serde_json::json!(true));
+
+    let windows = windows_with_instance(&fixture.server.display, &marker);
+    assert_eq!(windows.len(), 1);
+    let pid = window_pid(&fixture.server.display, windows[0]).expect("the app sets _NET_WM_PID");
+
+    // The proof of detachment, in the two facts that matter to this helper:
+    //
+    // * the app is not in this process's session, so it does not die with the helper; and
+    // * its parent is not this process, so the helper never has to reap it.
+    let my_session = dsh_computer_use::x11::launch::session_of(std::process::id())
+        .expect("this test process has a session");
+    let app_session = dsh_computer_use::x11::launch::session_of(pid)
+        .expect("the launched app has a session");
+    assert_ne!(
+        app_session, my_session,
+        "setsid must put the app in its own session so it outlives the helper"
+    );
+    let app_group = dsh_computer_use::x11::launch::process_group(pid).expect("a process group");
+    assert_ne!(
+        app_group,
+        dsh_computer_use::x11::launch::process_group(std::process::id()).unwrap(),
+        "the app must not share the helper's process group"
+    );
+
+    kill_marked(&marker);
+    drop(home);
 }
 
 /// A compile-time guard so the ignored-reason string stays in one place and cannot drift
