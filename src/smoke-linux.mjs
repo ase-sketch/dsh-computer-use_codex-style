@@ -3,10 +3,16 @@ import { fileURLToPath } from 'node:url'
 import { Sidecar } from './sidecar.js'
 
 const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+import fs from 'node:fs'
+import { nativeHelperCandidates } from './paths.js'
+
 const stubHelperPath = path.join(engineRoot, 'scripts', 'stub-linux-helper.mjs')
 
-// Set helper path to stub unless explicitly provided in env
-process.env.DSH_COMPUTER_USE_HELPER = process.env.DSH_COMPUTER_USE_HELPER || stubHelperPath
+// If neither DSH_COMPUTER_USE_HELPER is set nor any native candidate exists, fallback to stub
+const hasNative = nativeHelperCandidates(engineRoot).some(p => p && fs.existsSync(p))
+if (!process.env.DSH_COMPUTER_USE_HELPER && !hasNative) {
+  process.env.DSH_COMPUTER_USE_HELPER = stubHelperPath
+}
 
 const EXPECTED_LINUX_TOOLS = [
   'list_apps',
