@@ -100,6 +100,88 @@ fn experience() -> Option<std::sync::Arc<crate::x11_experience::Session>> {
     crate::x11_experience::session()
 }
 
+/// How a tool call relates to the experience layer.
+///
+/// The X11 layer arms on *observation*, which is this crate's own documented rule
+/// ("Observation begins for this turn"): the pill comes up, the synthesized pointer takes
+/// the desktop over, the Escape grab is installed and the freshness lease starts watching
+/// for human input. The Windows helper arms from the overlay's show(), which only its
+/// input methods call; keeping the X11 rule here is deliberate and is recorded in
+/// helper-linux/README.md.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExperienceUse {
+    /// Shows the operator what is happening. Arms the layer.
+    Observe,
+    /// Changes the desktop, so the pill says "working" while it runs.
+    Act,
+    /// Neither: listing windows or apps only reads a table.
+    None,
+}
+
+/// Classify a surface tool by name, whatever surface it arrived on.
+///
+/// A name can be served by either surface (click/press_key/type_text/scroll are on both),
+/// and the answer is the same either way: the layer is per X session, not per surface.
+pub(crate) fn experience_use(name: &str) -> ExperienceUse {
+    match name {
+        // Observation: the calls whose result the human is being shown.
+        "get_app_state" | "screenshot" | "get_window_state" => ExperienceUse::Observe,
+        // Table reads: real work, but nothing is shown and nothing is driven.
+        "list_apps" | "list_windows" | "get_window" => ExperienceUse::None,
+        // launch_app is intentionally absent: the X11 backend refuses it before doing
+        // anything, so arming for it would promise a turn that never starts.
+        _ => ExperienceUse::Act,
+    }
+}
+
+/// Arm the layer for a call, if this is a call that arms it.
+///
+/// `begin()` is idempotent (arming twice does not restart the grace window), so an
+/// observation followed by a click in the same turn produces one armed turn, not two.
+///
+/// Arming is best effort on purpose. The layer is created lazily, so a session that
+/// cannot offer one (Wayland, no DISPLAY, a refused X connection, a refused Escape grab)
+/// simply reports that through health/diagnostics and the call runs anyway. Every Handle
+/// method here is non-blocking and drops a dead X thread's command instead of failing, so
+/// no arming step can fail a tool call or change what a call returns.
+pub(crate) fn begin_experience(session: Option<&crate::x11_experience::Session>, use_: ExperienceUse) {
+    let Some(session) = session else { return };
+    if use_ == ExperienceUse::None {
+        return;
+    }
+    session.begin();
+    if use_ == ExperienceUse::Observe {
+        session.observe();
+    } else {
+        session.working();
+    }
+}
+
+/// Run one tool call on whichever surface serves it.
+///
+/// Deliberately not an async fn: it is the arming that has to be synchronously visible to
+/// the caller (the Escape branch is only armed when this call really armed the layer), so
+/// arming stays in the caller and this only routes and runs.
+async fn invoke_experienced(
+    service: &ComputerUseLinux,
+    name: &str,
+    arguments: Map<String, Value>,
+    budget_ms: i64,
+    window2_native: bool,
+) -> Result<CallToolResult, String> {
+    if window2_native {
+        // The window2 handlers are synchronous (they talk to the X server directly), so
+        // they run on the blocking pool and never on the request-loop thread.
+        let dispatched = name.to_string();
+        return tokio::task::spawn_blocking(move || {
+            crate::x11::window2::dispatch(&dispatched, arguments)
+        })
+        .await
+        .unwrap_or_else(|error| Err(format!("the window2 worker did not finish: {error}")));
+    }
+    service.invoke_surface_tool(name, arguments, budget_ms).await
+}
+
 /// A method that must stay reachable while the helper is interrupted, so the host can
 /// always clean up. Mirrors the official lifecycle-method carve-out.
 fn is_lifecycle_method(method: &str) -> bool {
@@ -337,40 +419,42 @@ async fn run_interruptible(
     // to the window2 handler there instead of the P1 sky.window one. With no tag the old
     // routing stands, which keeps a P1 host bit-for-bit compatible.
     let call_surface = protocol::json_str(params, "surface");
-    // The window2 surface has its own dispatcher: its handlers must not go through the
+    // Both surfaces arm the same layer: the experience layer is one per X session, and the
+    // plugin's default Linux surface is the P1 one, so a layer that only armed on window2
+    // faces would never arm on the default path. Arming is observation-driven and never
+    // changes what a call returns.
+    //
+    // The surface decides only *what runs*: the window2 handlers must not go through the
     // crate's MCP router, which knows nothing about window-relative coordinates.
-    if is_window2_native_call(&tool_name, call_surface.as_deref()) {
-        let dispatched = tool_name.clone();
-        let outcome = tokio::task::spawn_blocking(move || {
-            crate::x11::window2::dispatch(&dispatched, arguments)
-        })
-        .await
-        .unwrap_or_else(|error| Err(format!("the window2 worker did not finish: {error}")));
-        return vec![pack_outcome(call_id, &tool_name, outcome)];
-    }
-    let call = service.invoke_surface_tool(&tool_name, arguments, budget_ms);
-    tokio::pin!(call);
-
-    // The Escape branch is only armed when this session actually has the layer, so a
-    // Wayland or headless helper keeps the old two-way select exactly.
+    let window2_native = is_window2_native_call(&tool_name, call_surface.as_deref());
+    // The layer decides what "observing" means for this name and arms *synchronously*,
+    // before the call future exists: the Escape branch below is only live when this call
+    // really armed the layer, and a future's body has not run at that point.
     let escape_session = experience();
-    let escape_armed = escape_session.is_some();
+    begin_experience(escape_session.as_deref(), experience_use(&tool_name));
+    let escape_armed = escape_session.as_ref().is_some_and(|session| session.is_armed());
     let escape_notice = match escape_session.as_ref() {
-        Some(experience) => experience.interrupt_notice(),
-        // Never notified when the layer is absent, so the guard stays false forever.
+        Some(session) => session.interrupt_notice(),
         None => Arc::new(tokio::sync::Notify::new()),
     };
+    let call = invoke_experienced(service, &tool_name, arguments, budget_ms, window2_native);
+    tokio::pin!(call);
 
     loop {
         tokio::select! {
             result = &mut call => return vec![pack_outcome(call_id, &tool_name, result)],
-            // A physical Escape is out-of-band: it has to stop the call the model is
-            // running, not wait behind it. helper-rs cancels through its low-level hook
-            // (exit status 130); here the notification comes from the X11 thread that
-            // holds the root grab.
+            // A physical Escape is out-of-band. helper-rs cancels through its low-level
+            // hook (exit status 130); here the notification comes from the X thread that
+            // saw the Escape -- through the root grab when it could take one, and through
+            // the XInput2 raw-key path when the grab was refused, which is the case on a
+            // desktop whose compositor already owns the Escape binding.
+            //
+            // The branch is armed only when this call really armed the layer, so a call
+            // that leaves the layer alone (list_windows, or a session with no layer at
+            // all) keeps the old two-way select exactly.
             _ = escape_notice.notified(), if escape_armed => {
-                if let Some(experience) = escape_session.as_ref() {
-                    let _ = experience.take_escaped();
+                if let Some(session) = escape_session.as_ref() {
+                    let _ = session.take_escaped();
                 }
                 return vec![
                     protocol::err(call_id.clone(), cancel_message(CancelReason::Interrupted)),
@@ -810,7 +894,11 @@ async fn window2_health() -> Value {
         // Windows helper: DWM keeps a full backing bitmap per window, plain X11 does
         // not, so a fully obscured window that has not repainted yields its last
         // painted content rather than live pixels.
-        "occlusionNote": "composite capture returns the window's own pixels; a window that is                           fully obscured and has not repainted yields its last painted content,                           which is weaker than the Windows DWM guarantee",
+        // The continuation backslashes strip the newline and the next line's leading
+        // whitespace, so the sentence reads as one line wherever it is displayed.
+        "occlusionNote": "composite capture returns the window's own pixels; a window that is \
+                          fully obscured and has not repainted yields its last painted \
+                          content, which is weaker than the Windows DWM guarantee",
     })
 }
 

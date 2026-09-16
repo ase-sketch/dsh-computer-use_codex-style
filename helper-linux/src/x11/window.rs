@@ -516,6 +516,31 @@ pub fn to_root_coordinates(
     ))
 }
 
+/// The EWMH _NET_ACTIVE_WINDOW source indication this helper sends.
+///
+/// 1 is "a normal application" and 2 is "a pager". KWin honours a pager request from a
+/// client that cannot prove a user gesture and refuses an application one, so the pager
+/// value is the one that actually raises a window on the operator's behalf. Kept as a
+/// named constant so the unit test below pins the wire value rather than a copy of it.
+pub const ACTIVE_WINDOW_SOURCE_PAGER: u32 = 2;
+
+/// The _NET_ACTIVE_WINDOW client message this helper sends, as wire data.
+///
+/// Split out so the message can be asserted without a window manager or a display: the
+/// defect this pins was a single wrong number, and it was invisible to every test that
+/// only checked that activate_window returned Ok.
+pub fn active_window_message(window: Window, atom: x11rb::protocol::xproto::Atom) -> ClientMessageEvent {
+    ClientMessageEvent {
+        response_type: x11rb::protocol::xproto::CLIENT_MESSAGE_EVENT,
+        format: 32,
+        sequence: 0,
+        window,
+        type_: atom,
+        // [source, timestamp, requestor's currently active window, 0, 0]
+        data: ClientMessageData::from([ACTIVE_WINDOW_SOURCE_PAGER, 0, 0, 0, 0]),
+    }
+}
+
 /// Bring a window to the foreground the way EWMH intends.
 pub fn activate_window(id: u64) -> Result<String> {
     let window = Window::try_from(id)
@@ -525,16 +550,19 @@ pub fn activate_window(id: u64) -> Result<String> {
         let atoms = atoms_on(connection)?;
         let wm = window_manager_window(connection)?;
         if wm.is_some() {
-            // _NET_ACTIVE_WINDOW with source indication 1 (application) and no
-            // timestamp: the WM decides, which is the only correct way to raise.
-            let event = ClientMessageEvent {
-                response_type: x11rb::protocol::xproto::CLIENT_MESSAGE_EVENT,
-                format: 32,
-                sequence: 0,
-                window,
-                type_: atoms.net_active_window,
-                data: ClientMessageData::from([1u32, 0, 0, 0, 0]),
-            };
+            // _NET_ACTIVE_WINDOW with source indication 2 (pager) and no timestamp.
+            //
+            // EWMH says source 1 means "a normal application" and lets the window manager
+            // apply focus-stealing prevention; source 2 means "a pager", which is a
+            // request the WM is expected to honour for a window it is not certain the
+            // user just looked at. KWin implements that distinction strictly and ignores
+            // source 1 from a client that has no user-gesture timestamp, which is why a
+            // raise that reported success changed nothing on the real desktop (measured:
+            // source 1 -> _NET_ACTIVE_WINDOW unchanged; source 2 -> it changes). The
+            // helper is acting on the operator's behalf, which is what the pager
+            // indication is for; there is no timestamp to supply, so the WM keeps
+            // deciding how to focus, it just stops refusing.
+            let event = active_window_message(window, atoms.net_active_window);
             raw.send_event(
                 false,
                 connection.root(),
@@ -601,6 +629,26 @@ pub fn set_window_property(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activation_asks_the_window_manager_as_a_pager_not_as_an_application() {
+        // The defect this pins: the message was sent with source 1 (application), which
+        // KWin answers with a refusal-by-silence -- send_event succeeds, the window does
+        // not come up. EWMH source 2 (pager) is the indication a window manager is
+        // expected to honour from a client acting on the operator's behalf.
+        let message = active_window_message(0x1234, 0x2a);
+        assert_eq!(ACTIVE_WINDOW_SOURCE_PAGER, 2, "EWMH source 2 is the pager indication");
+        assert_eq!(message.data.as_data32()[0], 2, "data[0] is the source indication");
+        assert_eq!(message.data.as_data32()[1], 0, "no timestamp: the WM keeps deciding");
+        assert_eq!(message.data.as_data32()[2], 0, "no requestor window");
+        assert_eq!(message.window, 0x1234, "the message is addressed to the target window");
+        assert_eq!(message.type_, 0x2a, "the message type is _NET_ACTIVE_WINDOW");
+        assert_eq!(message.format, 32);
+        assert_eq!(
+            message.response_type,
+            x11rb::protocol::xproto::CLIENT_MESSAGE_EVENT
+        );
+    }
 
     #[test]
     fn a_window_id_that_does_not_fit_a_window_is_rejected() {
