@@ -89,6 +89,17 @@ fn cancel_message(reason: CancelReason) -> String {
     }
 }
 
+/// The X11 experience layer (status pill, synthesized pointer, freshness lease, global
+/// Escape), or None when this session has none to offer.
+///
+/// Created lazily on the first turn instead of at process start: a helper that is spawned
+/// to answer health on a Wayland desktop must not pay for an X connection, and a failure
+/// to open one is a supported state rather than an error the tool surface has to carry.
+/// helper-rs owns the same four behaviours on Windows; this is the X11 twin.
+fn experience() -> Option<std::sync::Arc<crate::x11_experience::Session>> {
+    crate::x11_experience::session()
+}
+
 /// A method that must stay reachable while the helper is interrupted, so the host can
 /// always clean up. Mirrors the official lifecycle-method carve-out.
 fn is_lifecycle_method(method: &str) -> bool {
@@ -335,9 +346,31 @@ async fn run_interruptible(
     let call = service.invoke_surface_tool(&tool_name, arguments, budget_ms);
     tokio::pin!(call);
 
+    // The Escape branch is only armed when this session actually has the layer, so a
+    // Wayland or headless helper keeps the old two-way select exactly.
+    let escape_session = experience();
+    let escape_armed = escape_session.is_some();
+    let escape_notice = match escape_session.as_ref() {
+        Some(experience) => experience.interrupt_notice(),
+        // Never notified when the layer is absent, so the guard stays false forever.
+        None => Arc::new(tokio::sync::Notify::new()),
+    };
+
     loop {
         tokio::select! {
             result = &mut call => return vec![pack_outcome(call_id, &tool_name, result)],
+            // A physical Escape is out-of-band: it has to stop the call the model is
+            // running, not wait behind it. helper-rs cancels through its low-level hook
+            // (exit status 130); here the notification comes from the X11 thread that
+            // holds the root grab.
+            _ = escape_notice.notified(), if escape_armed => {
+                if let Some(experience) = escape_session.as_ref() {
+                    let _ = experience.take_escaped();
+                }
+                return vec![
+                    protocol::err(call_id.clone(), cancel_message(CancelReason::Interrupted)),
+                ];
+            }
             item = rx.recv() => {
                 let Some(item) = item else {
                     // The host closed the stream: let the call finish so its result is not lost.
@@ -495,6 +528,11 @@ async fn dispatch_verb(
             false,
         ),
         "interrupt" => {
+            // The overlay goes away with the call it was shown for; the lease is left
+            // for the next observation. helper-rs does this from its own interrupt path.
+            if let Some(experience) = experience() {
+                experience.interrupt();
+            }
             state.interrupted.store(true, Ordering::SeqCst);
             // The worker races this verb against the call in progress and cancels it, so
             // nothing more is needed here beyond the latch that refuses later calls.
@@ -505,6 +543,11 @@ async fn dispatch_verb(
             // the turn changes, so this must NOT strand the helper: it clears the
             // interrupt latch, reports the turn it ended, and is safe to call twice.
             state.interrupted.store(false, Ordering::SeqCst);
+            // "hide the overlay, flush the observation lease and re-arm for the next
+            // turn" -- the sidecar sends end_turn exactly when the turn scope changes.
+            if let Some(experience) = experience() {
+                experience.end_turn();
+            }
             let (session_id, turn_id) = (
                 protocol::json_str(params, "session_id").unwrap_or_default(),
                 protocol::json_str(params, "turn_id").unwrap_or_default(),
@@ -519,6 +562,11 @@ async fn dispatch_verb(
             )
         }
         "shutdown" => {
+            // A helper that exits while holding a root Escape grab would eat the
+            // operator's own Escape key for the rest of the session.
+            if let Some(experience) = experience() {
+                experience.shutdown();
+            }
             state.shutdown.store(true, Ordering::SeqCst);
             state.interrupted.store(true, Ordering::SeqCst);
             (Ok(json!({"closed": true})), true)
@@ -646,6 +694,9 @@ async fn health_payload(
         "input": input,
         "degraded": degraded,
         "interrupted": state.is_interrupted(),
+        // Exactly one field, and only for the sessions that have the layer: a second
+        // one would grow the health contract the integration line depends on.
+        "experience": crate::x11_experience::health_summary(),
     })
 }
 

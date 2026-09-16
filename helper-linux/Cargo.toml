@@ -22,6 +22,11 @@ path = "src/bin/codex-chrome-extension-host.rs"
 name = "codex-computer-use-cosmic"
 path = "src/bin/codex-computer-use-cosmic.rs"
 
+[dev-dependencies]
+# The X11 integration test drives the server directly (XTEST injection, window
+# tree inspection) so the assertions are real round trips rather than mocks.
+x11rb = { version = "0.13", default-features = false, features = ["xtest", "xinput"] }
+
 [dependencies]
 mimalloc = { version = "0.1", default-features = false }
 anyhow = "1.0.102"
@@ -49,10 +54,13 @@ tokio-tungstenite = { version = "0.29.0", default-features = false, features = [
 wayland-client = "0.31.11"
 wayland-protocols = { version = "0.32.9", features = ["client", "staging"] }
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
+# Pure-Rust X11: the default features never link libxcb, which this machine has no
+# development files for, and SHM/XTest/XFixes/XComposite come from x11rb-protocol
+# wire definitions, so no X11 development package is needed at build time. The
+# feature set is the union of both window2 lines: xtest/xinput/xfixes serve the
+# input and element paths (src/x11/input.rs, src/x11_experience/), shm backs the
+# fast capture path, and `composite` is what makes an occluded window capturable
+# (see src/x11/capture.rs).
+x11rb = { version = "0.13", default-features = false, features = ["shm", "xtest", "xfixes", "composite", "xinput"] }
 xkeysym = "0.2.1"
-# Pure-Rust X11: the default features never link libxcb, and SHM/XTest/XFixes/
-# XComposite come from x11rb-protocol wire definitions, so no X11 development
-# package is needed at build time. `composite` is what makes an occluded window
-# capturable; see src/x11/capture.rs.
-x11rb = { version = "0.13", features = ["shm", "xtest", "xfixes", "composite", "xinput"] }
 zbus = "5.14.0"
