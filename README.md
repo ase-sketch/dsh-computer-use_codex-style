@@ -367,7 +367,15 @@ pwsh -File scripts/ship-helper.ps1
 
 # Python engine (optional browser surface)
 python -m pip install -e .
+
+# Optional: the direct-CDP (WebSocket) path inside the Python engine
+python -m pip install --user websocket-client   # or: apt install python3-websocket-client
 ```
+
+The Chrome/Edge **extension** channel needs no third-party Python package: the engine binds
+its ExtensionHub on `127.0.0.1:8765` and the extension polls it. Only the direct-CDP path
+(`--remote-debugging-port` + WebSocket) needs `websocket-client`; without it the engine
+still starts and says so when a CDP operation is attempted.
 
 `scripts/ship-helper.ps1` runs `cargo build --release`, the helper test suite, copies `dsh-computer-use.exe` into `helper-rs/bin/<platform>-<arch>/` and prints its SHA-256. A fresh checkout runs without a Rust toolchain because that binary is tracked.
 
