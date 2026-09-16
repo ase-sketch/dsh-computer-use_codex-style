@@ -46,7 +46,7 @@ fi
 
 echo "[run-smoke] Using helper binary: $BINARY"
 
-ARTIFACTS_DIR="${SMOKE_ARTIFACTS_DIR:-$REPO_ROOT/parity/x11/artifacts}"
+ARTIFACTS_DIR="${SMOKE_ARTIFACTS_DIR:-$REPO_ROOT/.cu/artifacts}"
 mkdir -p "$ARTIFACTS_DIR"
 
 RESPONSES_JSONL="$ARTIFACTS_DIR/x11-smoke-responses.jsonl"

@@ -58,7 +58,7 @@ fi
 
 echo "[run-window2-e2e] Using helper binary: $BINARY"
 
-ARTIFACTS_DIR="${WINDOW2_E2E_ARTIFACTS_DIR:-$REPO_ROOT/parity/x11/artifacts}"
+ARTIFACTS_DIR="${WINDOW2_E2E_ARTIFACTS_DIR:-$REPO_ROOT/.cu/artifacts}"
 mkdir -p "$ARTIFACTS_DIR"
 SUMMARY_JSON="$ARTIFACTS_DIR/x11-window2-e2e-summary.json"
 

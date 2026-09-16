@@ -44,6 +44,7 @@ analysis/
 # observations.jsonl (facts), pending.jsonl and manual.jsonl. Decision D-1 keeps the store
 # inside the plugin folder, so it must never be committed or packed.
 .experience/
+.cu/
 
 # --- Machine-local app catalog cache (helper runtime state) ----------------
 # The Rust helper keeps the installed-app catalog in

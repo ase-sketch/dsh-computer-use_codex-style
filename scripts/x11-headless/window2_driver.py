@@ -520,16 +520,39 @@ def main():
                      and (activated.get("result", {}).get("value") or {}).get("activated") == window_id,
                      json.dumps(activated.get("result", {}).get("value"))[:80])
 
-        # These three are legitimately refused on X11: no shell app registry to
-        # resolve an app id, and no toolkit a11y bridge for xterm elements. The
-        # assertion is that the refusal comes from the WINDOW2 handler.
+        # launch_app is implemented via desktop entry / PATH resolution:
+        # 1) An available app (like xterm) must succeed (either launched or alreadyRunning).
+        # 2) An unresolvable app must receive structured refusal from the window2 handler.
         launch = helper.call("launch_app", {"app": "xterm"})
-        launch_error = launch.get("error")
-        launch_text = json.dumps(launch_error)
-        summary["window2"]["launch_app_error"] = launch_error
-        check.expect("launch_app refuses with the window2 registry explanation",
-                     launch.get("ok") is False and "application registry" in launch_text,
-                     launch_text[:110])
+        launch_val = launch.get("result", {}).get("value") or {}
+        summary["window2"]["launch_app"] = launch_val
+        launch_ok = (
+            launch.get("ok") is True
+            and (launch_val.get("launched") is True or launch_val.get("alreadyRunning") is True)
+        )
+
+        nonexistent = helper.call("launch_app", {"app": "definitely-not-installed-app-xyz-42"})
+        nonexistent_error = nonexistent.get("error")
+        nonexistent_text = json.dumps(nonexistent_error)
+        summary["window2"]["launch_app_nonexistent_error"] = nonexistent_error
+        nonexistent_ok = (
+            nonexistent.get("ok") is False
+            and "unsupported" in nonexistent_text
+            and "launch_app" in nonexistent_text
+        )
+
+        check.expect(
+            "launch_app succeeds on valid app and refuses nonexistent app",
+            launch_ok and nonexistent_ok,
+            "xterm(ok=%s, launched=%s, alreadyRunning=%s) nonexistent(ok=%s, refused=%s)"
+            % (
+                launch.get("ok"),
+                launch_val.get("launched"),
+                launch_val.get("alreadyRunning"),
+                nonexistent.get("ok"),
+                "unsupported" in nonexistent_text,
+            ),
+        )
 
         for name, arguments in (
             ("set_value", {"window": {"id": window_id}, "element_index": 0, "value": "x"}),
