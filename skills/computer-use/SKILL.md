@@ -99,6 +99,7 @@ again solely for inspection.
 
 ## Guidelines
 
+- **Locating a specific target (查找特定对象)**: When asked to find a specific object inside an application (such as a contact in QQ/WeChat, a file in a file manager, or a setting), read [Efficiency tactics (高效战术)](#efficiency-tactics-高效战术) first. Never default to visual scrolling when search mechanisms exist.
 - **Enumerate before acting**: Always check `list_windows` before attempting to open any app. If the target window already exists, activate and reuse it via `activate_window`; never attempt to launch it again.
 - **Never launch GUI apps through the shell**: Do not use bash/shell commands to launch GUI applications; use `launch_app` only when `list_windows` confirms the app is not already running.
 - **Electron applications (e.g. QQ, WeChat, VS Code)**: AT-SPI or UIA accessibility trees and element indexes may be unavailable or empty. Falling back to visual screenshot inspection and coordinate-based clicking (`click({window, screenshotId, x, y})`) is the standard, expected path.
@@ -116,6 +117,16 @@ again solely for inspection.
 - For text entry into a document, slide, sheet, editor, or canvas, click a stable point inside the editable work surface, refresh to verify focus, then type.
 - For drawing, handwriting, canvas, or 3D viewport manipulation, use `drag` strokes directly on the canvas.
 - For browser work prefer the `computer-use-browser` skill over pixels.
+
+## Efficiency tactics (高效战术)
+
+When automating tasks that involve locating a specific object inside an application (e.g. finding contacts in IM apps like QQ or WeChat, files in a directory, settings items, or application launchers), apply these efficiency tactics instead of blindly scanning UI elements:
+
+1. **Search before scroll (先搜索再滚动)**: When the target is a searchable item (contacts in IM apps like QQ/WeChat, files in a file manager, settings pages, or app launchers) and the application provides a search box, click the search box, `type_text` the name or keyword, and press `Return`. Scanning long lists screen-by-screen (screenshot -> scroll -> guess) is strictly prohibited when a search field is available.
+2. **Batch the search sequence (合并搜索动作序列)**: The sequence of clicking the search field, typing the search keyword, and pressing `Return` does not depend on intermediate `element_index` updates. Combine them into a single `batch_actions` call (e.g. `[click, type_text, press_key({key: "Return"})]`) followed by one `get_window_state` refresh, eliminating redundant observation round-trips (refer to the `batch_actions` rules above).
+3. **Type-ahead (焦点前缀键入直达)**: Many lists (contact rosters, file pickers, directory trees) jump directly to matching entries when receiving keystrokes when focused. Click once inside the list view to acquire keyboard focus, then type the initial characters of the target name instead of scrolling visually.
+4. **Keyboard beats pixels (快捷键优于像素查找)**: Always prioritize application hotkeys and keyboard shortcuts (e.g. `Ctrl+F` or `Ctrl+K` for search, `Ctrl+S` to save, `Tab` / arrow keys to navigate) over hunting UI pixels across the screen with mouse clicks.
+5. **Scroll only as the fallback (仅在无搜索手段时回退滚动)**: Fall back to scrolling only after confirming that no search box, filter, or keyboard navigation is available. When scrolling is necessary, initiate from a coordinate inside the target pane, use a large stride (`|scrollY|` roughly equal to one full pane height), re-observe after each scroll, and stop immediately as soon as the target appears.
 
 ## Reading the accessibility tree
 
