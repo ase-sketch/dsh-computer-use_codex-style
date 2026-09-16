@@ -35,6 +35,7 @@ Key characteristics on Linux:
 2. **Coordinate-based input (no element_index)**: All click and scroll actions operate on window-relative coordinates `{ x, y }`. Accessibility element indexes (`element_index`), `drag`, and direct `set_value` are Windows window2 capabilities not present in Linux P1.
 3. **Session permissions (Portal)**: Under Wayland, the first call to `screenshot` or input tools will display an OS-level XDG Desktop Portal permission prompt. The user must grant screen capture / remote desktop access.
 4. **AT-SPI accessibility**: `get_app_state` reads AT-SPI accessibility trees. If disabled in the desktop session, `text` will be omitted or empty, and actions should rely on visual screenshots.
+5. **Electron applications (QQ, WeChat, VS Code, etc.)**: Accessibility trees (AT-SPI) are often incomplete or disabled. When element indexes or text trees are unavailable or empty, falling back to visual inspection via screenshots and coordinate-based clicking (`click`) is the normal and expected path.
 
 For full type definitions and examples, see `references/api-linux.md`.
 
@@ -54,10 +55,12 @@ If `list_windows` / `launch_app` / `computer_use_health` are not in your functio
 Call `computer_use_health` first when you need the backend, the allow list, or whether browser tools
 are unlocked. Then select exactly one target window:
 
-1. `list_apps` (installed apps plus their open targetable windows) and/or `list_windows` (currently open windows).
+1. **Enumerate before acting (先枚举再行动)**: Always call `list_windows` (and/or `list_apps`) before interacting with any application.
+   - If the target app is already running, pick its window and call `activate_window({window})` to bring it forward and reuse the existing instance. **Never launch a second instance or restart an already-running app.**
 2. Pick **exactly one** returned window object. Never invent `app` / `id`, and never reconstruct a window
    from guessed fields. `get_window({id, app})` rehydrates a binding you already hold.
-3. If the target app has no open window, call `launch_app({app})`, refresh `list_apps`, then select a returned window.
+3. **Launch only when absent**: Call `launch_app({app})` only after enumeration confirms that no open window exists for the app. Then refresh `list_apps` / `list_windows` and select a returned window.
+   - **Never launch GUI applications via bash/shell commands** (e.g. `qq &`, `nohup ...`, `code`): running desktop apps through the shell bypasses window tracking and risks spawning duplicate instances or corrupted login states.
 4. `activate_window({window})`, then `get_window_state({window})`.
 
 `get_window_state({window})` defaults to screenshot on and `accessibility: null`. Set
@@ -96,6 +99,9 @@ again solely for inspection.
 
 ## Guidelines
 
+- **Enumerate before acting**: Always check `list_windows` before attempting to open any app. If the target window already exists, activate and reuse it via `activate_window`; never attempt to launch it again.
+- **Never launch GUI apps through the shell**: Do not use bash/shell commands to launch GUI applications; use `launch_app` only when `list_windows` confirms the app is not already running.
+- **Electron applications (e.g. QQ, WeChat, VS Code)**: AT-SPI or UIA accessibility trees and element indexes may be unavailable or empty. Falling back to visual screenshot inspection and coordinate-based clicking (`click({window, screenshotId, x, y})`) is the standard, expected path.
 - Treat `get_window_state` as an expensive point-in-time snapshot. Batch related inputs, then capture a new state when you need to verify progress or when focus, layout, modality, or element indexes may have changed.
 - Element indexes are valid only for the accessibility state that produced them. Refresh accessibility state after any action that may change the visible element tree.
 - By default `get_window_state({window})` captures and displays a screenshot and returns `accessibility: null`. This is the best default for desktop apps with weak accessibility trees.
@@ -185,6 +191,8 @@ those tools are not registered.
 - Do not spawn `codex-computer-use.exe`: Codex is not required and must not be used.
 - Do not edit or delete shipped DeepSeek Harness presets (`standard`, `cordis`, `minimal`, `ptc`). User presets live under `$DSH_HOME/.agent-presets/`.
 - Do not reconstruct window handles after they may have closed; list again.
+- Do not launch or restart an app without checking `list_windows` first; always activate and reuse an existing window if present.
+- Do not launch GUI applications via bash/shell/terminal commands; use `launch_app` only after confirming no window exists.
 
 Your system prompt carries the always-on session contract, the two-cell loop, recovery, and the complete
 Windows Automation Safety block. The three reference documents above hold everything else — read them from
