@@ -121,13 +121,38 @@ again solely for inspection.
 
 ## Efficiency tactics (高效战术)
 
-When automating tasks that involve locating a specific object inside an application (e.g. finding contacts in IM apps like QQ or WeChat, files in a directory, settings items, or application launchers), apply these efficiency tactics instead of blindly scanning UI elements:
+When automating tasks that involve locating a specific object or driving desktop apps (e.g. QQ, WeChat, file managers, settings), apply these efficiency tactics instead of blindly scanning or clicking:
 
-1. **Search before scroll (先搜索再滚动)**: When the target is a searchable item (contacts in IM apps like QQ/WeChat, files in a file manager, settings pages, or app launchers) and the application provides a search box, click the search box, `type_text` the name or keyword, and press `Return`. Scanning long lists screen-by-screen (screenshot -> scroll -> guess) is strictly prohibited when a search field is available.
-2. **Batch the search sequence (合并搜索动作序列)**: The sequence of clicking the search field, typing the search keyword, and pressing `Return` does not depend on intermediate `element_index` updates. Combine them into a single `batch_actions` call (e.g. `[click, type_text, press_key({key: "Return"})]`) followed by one `get_window_state` refresh, eliminating redundant observation round-trips (refer to the `batch_actions` rules above).
-3. **Type-ahead (焦点前缀键入直达)**: Many lists (contact rosters, file pickers, directory trees) jump directly to matching entries when receiving keystrokes when focused. Click once inside the list view to acquire keyboard focus, then type the initial characters of the target name instead of scrolling visually.
-4. **Keyboard beats pixels (快捷键优于像素查找)**: Always prioritize application hotkeys and keyboard shortcuts (e.g. `Ctrl+F` or `Ctrl+K` for search, `Ctrl+S` to save, `Tab` / arrow keys to navigate) over hunting UI pixels across the screen with mouse clicks.
-5. **Scroll only as the fallback (仅在无搜索手段时回退滚动)**: Fall back to scrolling only after confirming that no search box, filter, or keyboard navigation is available. When scrolling is necessary, initiate from a coordinate inside the target pane, use a large stride (`|scrollY|` roughly equal to one full pane height), re-observe after each scroll, and stop immediately as soon as the target appears.
+### Search & text input (搜索与输入)
+- **Search before scroll (先搜索再滚动)**: When the target is searchable, click the search box, `type_text` the name or keyword, and press `Return`. Screen-by-screen visual scanning is strictly prohibited when a search field exists.
+- **App search shortcuts (应用级搜索快捷键)**: In desktop apps like QQ/WeChat, press `Ctrl+F` directly to focus the search box instead of hunting for search icons across UI pixels.
+- **Clear-before-type (键入前清空残留)**: Send `Ctrl+A` followed by `Backspace` before typing into any search or text field to clear stale input.
+- **First-result Return (回车直达首选结果)**: Press `Return` immediately after typing a search query to activate the first match without an extra observation round-trip to pick from dropdowns.
+- **Clipboard paste for CJK/long text (剪贴板粘贴长文本与CJK)**: For Chinese, emoji, or strings >20 characters, prefer writing to the clipboard and sending `Ctrl+V` to prevent IME composition desync.
+
+### Keyboard & micro-targets (键盘导航与微小目标)
+- **Keyboard beats pixels (快捷键优于像素查找)**: Always prioritize application hotkeys and standard navigation (`Ctrl+F`, `Ctrl+S`, `Tab`, arrows) over hunting UI coordinates with clicks.
+- **Sub-16px targets via keyboard (微小目标用键盘操作)**: For micro-targets (<16px, e.g. close buttons, expand chevrons), use `Tab` / `Shift+Tab` to move focus and `Space` / `Return` to trigger rather than pixel clicking.
+- **Type-ahead list navigation (焦点前缀键入直达)**: In list views (contacts, file pickers), focus the list and type initial characters to jump directly to matching entries instead of scrolling visually.
+
+### Scrolling discipline (滚动纪律)
+- **Scroll only as fallback (仅在无搜索手段时回退滚动)**: Fall back to scrolling only when no search, filter, or keyboard navigation exists; use large strides (~pane height) and stop immediately once visible.
+- **Pointer anchoring before scroll (滚动前指针锚定)**: Move the mouse pointer inside the target container boundary before issuing `scroll` so wheel events route to the intended pane.
+- **Scroll boundary detection (滚动边界探测)**: Compare consecutive screenshots; when container content stops changing across scrolls, the boundary is reached—halt scrolling immediately.
+
+### Cadence & batching (执行节奏与批处理)
+- **Batch deterministic sequences (全确定序列单回合批处理)**: Combine fully deterministic sequences (e.g. click search -> clear -> paste -> Return) into one `batch_actions` call; capture screenshots only at visual decision boundaries.
+- **Settle async rendering (异步渲染等待沉淀)**: After triggering network queries or async UI updates (e.g. Electron search results), wait 0.5–1.5s (`waitMs` in `batch_actions`) before the next observation.
+
+### Verification & IM safety (视觉核验与 IM 纪律)
+- **Visual diff verification (行动后视觉差分核实)**: Confirm expected visual changes (cursor focus, tab selection, modal dismissal) in the post-action screenshot; if the screen did not change, the action failed—never assume success.
+- **IM send discipline (IM 发送与换行纪律)**: In IM clients (QQ/WeChat), `Return` sends the message while `Shift+Return` inserts a line break.
+- **IM recipient double-check (IM 发送前双重核对)**: Because Electron IMs lack reliable accessibility trees, always visually verify in the screenshot that the active chat header matches the intended recipient before sending.
+
+### Recovery & convergence (脱困与收敛)
+- **Escape from traps (Escape 键脱困)**: Press `Escape` first whenever unexpected popups, autocomplete dropdowns, or context menus trap keyboard focus.
+- **Loop-breaking circuit breaker (防死循环断路器)**: If consecutive screenshots show no progress, do not repeat the same call or coordinates; immediately switch modalities (click -> keyboard, search -> enumeration).
+- **Fast convergence on absence (快速收敛不可行)**: If a target remains unfound after one focused search and one bounded scroll, conclude it does not exist and report back honestly—never click randomly or hallucinate.
 
 ## Reading the accessibility tree
 
