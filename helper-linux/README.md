@@ -188,6 +188,15 @@ Two things about that are deliberate:
   turn") and is what the pill is for — telling the operator that the machine is being looked
   at.
 
+**The overlays are click-through.** An override-redirect window that is merely drawn on top
+still wins hit-testing, so a sprite that follows the pointer would swallow the very clicks the
+helper is synthesizing — and a pill parked in a corner would swallow whatever the operator
+clicks there. Both overlays therefore carry an empty XFixes input region (`ShapeInput`, the
+X11 equivalent of the Windows overlay's `WS_EX_TRANSPARENT`), and
+`health.experience.overlayClickThrough` reports whether the server accepted the request.
+This was a real regression: arming the layer made the synthesized cursor intercept clicks, and
+the headless window2 end-to-end run failed with `[FAIL] xterm clicks land inside the
+target window  under pointer=0x400003 family=None`.
 **A refused Escape grab is a normal desktop, not a failure.** The bare Escape combination is
 routinely held by the compositor's own global shortcut (KWin holds it on the machine this was
 verified on), and a second client asking for it gets `BadAccess`. The layer stays fully

@@ -90,6 +90,9 @@ P2 expands `helper-linux` from the 7-tool sky.window subset to the **13-tool Cod
    surfaces — the P1 sky.window tools and the window2 ones):
    - Status overlay pill via override-redirect window.
    - Synthetic cursor tracking with hardware pointer suppression via XFixes.
+   - Both overlays are **click-through** (empty XFixes `ShapeInput` region, the X11 equivalent
+     of the Windows overlay's `WS_EX_TRANSPARENT`), so arming the layer never intercepts the
+     clicks the helper is synthesizing; `health.experience.overlayClickThrough` reports it.
    - Freshness lease enforcement via XInput2 raw event tracking.
    - Global physical `Escape` key intercept via X11 keygrab, degrading to XInput2 raw-key
      detection with an honest `health.experience.degraded` note when the compositor already

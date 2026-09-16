@@ -307,6 +307,49 @@ fn create_overlay(conn: &RustConnection, root: Window, width: u16, height: u16) 
     Ok(win)
 }
 
+/// Make an overlay invisible to the pointer as well as to the eye.
+///
+/// An override-redirect window that is merely drawn on top still WINS HIT-TESTING: the
+/// X server delivers a button event to the deepest window under the pointer, so a sprite
+/// following the pointer would swallow the very clicks the helper is synthesizing, and a
+/// pill parked in a corner would swallow whatever the operator clicks there. This was a
+/// real regression, caught by the headless window2 end-to-end run:
+///
+///   [FAIL] xterm clicks land inside the target window   under pointer=0x400003 family=None
+///
+/// The standard cure is to give the window an EMPTY input region (XFixes
+/// SetWindowShapeRegion with ShapeInput and Region None), which is the X11 equivalent of
+/// the WS_EX_TRANSPARENT style the Windows helper sets on both of its overlays
+/// (helper-rs/src/overlay/mod.rs). The window keeps painting; the pointer passes straight
+/// through it to whatever is underneath.
+///
+/// A failure here is reported, never swallowed: an overlay that steals clicks is worse
+/// than no overlay at all, so the caller records the outcome for diagnostics/health.
+fn make_click_through(conn: &RustConnection, window: Window) -> Result<(), String> {
+    // The region has to be an actually EMPTY one, not "no region". XFixes `Region` has no
+    // named constant for an empty region: passing the protocol's "None" resets the input
+    // shape to the window's DEFAULT shape (its bounding rectangle), which is the opposite
+    // of what is wanted and leaves the overlay eating clicks -- measured, not assumed: with
+    // "None" the regression test still saw the overlay receive the button event. Creating a
+    // region from zero rectangles is what expresses "no input here".
+    let region: xfixes::Region = conn.generate_id().map_err(|e| e.to_string())?;
+    xfixes::create_region(conn, region, &[])
+        .map_err(|e| e.to_string())?
+        .check()
+        .map_err(|e| e.to_string())?;
+    xfixes::set_window_shape_region(
+        conn,
+        window,
+        x11rb::protocol::shape::SK::INPUT,
+        0,
+        0,
+        region,
+    )
+    .map_err(|e| e.to_string())?
+    .check()
+    .map_err(|e| e.to_string())
+}
+
 fn open_fixed_font(conn: &RustConnection) -> Option<(xproto::Font, i32)> {
     let fid = conn.generate_id().ok()?;
     // The "fixed" alias exists on every X server. A missing font is not fatal:
@@ -380,6 +423,18 @@ impl Platform {
 
         let pill_win = create_overlay(&conn, root, 320, pill_height())?;
         let cursor_win = create_overlay(&conn, root, 40, 40)?;
+        // Both overlays are click-through before either is ever mapped. The pill is
+        // included deliberately: helper-rs gives its banner WS_EX_TRANSPARENT exactly as
+        // it does the cursor, so a banner that ate clicks would be a parity bug as well
+        // as a usability one, and this helper only ever synchronizes the pointer -- no
+        // overlay ever needs to be clickable.
+        let mut click_through = true;
+        for (window, name) in [(pill_win, "pill"), (cursor_win, "cursor")] {
+            if let Err(error) = make_click_through(&conn, window) {
+                click_through = false;
+                eprintln!("x11-experience: {name} overlay could not be made click-through: {error}");
+            }
+        }
         conn.flush().map_err(|e| e.to_string())?;
 
         let esc_keycode = keysym_to_keycode(&conn, KEYSYM_ESCAPE);
@@ -403,6 +458,10 @@ impl Platform {
             // Honest about the fallback: without raw events the lease has to poll the
             // pointer, which cannot tell our own injection from the operator's.
             "pointerPollingFallback": !raw_selected,
+            // The overlays are click-through (empty XFixes ShapeInput region). Reported so
+            // a server that refused the request cannot leave the helper silently
+            // swallowing the operator's clicks.
+            "overlayClickThrough": click_through,
             "escapeKeycode": esc_keycode,
             "fontMetrics": char_width,
         });

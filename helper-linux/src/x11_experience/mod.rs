@@ -226,6 +226,16 @@ pub fn health_summary() -> serde_json::Value {
                 )),
                 _ => None,
             };
+            // An overlay that refused to become click-through is the one failure mode of
+            // this layer that can silently steal the operator's clicks, so it is promoted
+            // out of capabilities() into the same degraded list health already has.
+            let click_degraded = match caps["overlayClickThrough"].as_bool() {
+                Some(false) => Some(
+                    "the overlays could not be made click-through: they may intercept pointer events"
+                        .to_string(),
+                ),
+                _ => None,
+            };
             serde_json::json!({
                 "state": if armed { "armed" } else { "available" },
                 "available": true,
@@ -233,8 +243,12 @@ pub fn health_summary() -> serde_json::Value {
                 "pill": caps["xfixesCursorSuppression"],
                 "rawEvents": caps["rawEvents"],
                 "pollingFallback": caps["pointerPollingFallback"],
+                "overlayClickThrough": caps["overlayClickThrough"],
                 "escapeGrab": grab,
-                "degraded": degraded,
+                // One field, whichever reason applies: a refused Escape grab degrades the
+                // interrupt path, a refused input shape degrades click delivery. The grab
+                // refusal is reported first because it is the more common desktop.
+                "degraded": degraded.or(click_degraded),
             })
         }
     }
