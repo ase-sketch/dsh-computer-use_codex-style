@@ -455,7 +455,7 @@ fn get_window_state(arguments: &Map<String, Value>) -> Result<CallToolResult, St
     if include_screenshot {
         match capture::capture_window(id) {
             Ok(captured) => {
-                screenshot_entries.push(json!({
+                let mut entry = json!({
                     "id": format!("0x{:x}:0", target.id),
                     "url": "data:image/png;base64,",
                     "zIndex": 0,
@@ -464,7 +464,26 @@ fn get_window_state(arguments: &Map<String, Value>) -> Result<CallToolResult, St
                     "width": captured.width,
                     "height": captured.height,
                     "method": captured.method.as_str(),
-                }));
+                });
+                // DSH extension, opt-in only: when the max-image-edge cap actually shrank
+                // the image, the entry has to say so. Click and drag take *window-relative*
+                // coordinates, so a model reading a 960x600 image as if it were the
+                // 1920x1200 window would land every click at half the intended offset.
+                // Declaring the coordinate space is what keeps that mapping honest.
+                //
+                // Nothing is added when no cap applied, so the default wire shape — and the
+                // official one — is byte-for-byte unchanged.
+                if (captured.width, captured.height)
+                    != (captured.coordinate_width, captured.coordinate_height)
+                {
+                    entry["coordinateWidth"] = json!(captured.coordinate_width);
+                    entry["coordinateHeight"] = json!(captured.coordinate_height);
+                    entry["scale"] = json!(
+                        f64::from(captured.width) / f64::from(captured.coordinate_width.max(1))
+                    );
+                    entry["resized"] = json!(true);
+                }
+                screenshot_entries.push(entry);
                 capture_note = captured.degraded.clone();
                 image = Some(captured.png);
             }

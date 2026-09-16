@@ -28,19 +28,27 @@ export const BASE_ENV_ALLOWLIST = [
  *
  * @param {object} [extra] values the caller adds (already-known keys)
  * @param {string[]} [extraAllowlist] additional names to forward from the host
+ * @param {string[]} [extraDenylist] names to withhold even when a forwarding rule
+ *   would have let them through. A knob the plugin owns must not be settable by a
+ *   stray variable in the host environment: otherwise "the user never opted in"
+ *   and "the helper is capped anyway" stop being distinguishable.
  * @returns {{ env: object, injected: string[], excluded: string[] }}
  */
-export function sanitizedEnvironment(extra = {}, extraAllowlist = []) {
+export function sanitizedEnvironment(extra = {}, extraAllowlist = [], extraDenylist = []) {
   const allow = new Set(
     BASE_ENV_ALLOWLIST.concat(Array.isArray(extraAllowlist) ? extraAllowlist : [])
       .map(name => String(name).toLowerCase()),
+  )
+  const deny = new Set(
+    (Array.isArray(extraDenylist) ? extraDenylist : []).map(name => String(name).toLowerCase()),
   )
   const env = {}
   const excluded = []
   for (const [name, value] of Object.entries(process.env)) {
     if (value === undefined) continue
     const lower = name.toLowerCase()
-    if (allow.has(lower) || lower.startsWith('dsh_') || name.startsWith('DSH_COMPUTER_USE_')) env[name] = value
+    if (deny.has(lower)) excluded.push(name)
+    else if (allow.has(lower) || lower.startsWith('dsh_') || name.startsWith('DSH_COMPUTER_USE_')) env[name] = value
     else excluded.push(name)
   }
   for (const [name, value] of Object.entries(extra)) {
@@ -585,7 +593,24 @@ export class Sidecar {
     if (['mask', 'wda', 'off'].includes(exclusion)) {
       extra.DSH_CU_OVERLAY_CAPTURE_EXCLUSION = exclusion
     }
-    const { env, injected, excluded } = sanitizedEnvironment(extra, this.config.envAllowlist)
+    // DSH-only knob: cap the longest edge of a returned screenshot. The official helper has
+    // no max-edge concept at all (parity/official-constants.json: 0 hits across its
+    // 19,738-string table), so this is an opt-in extension, exactly like cursorScale. It
+    // travels through the environment because the official helper's argv parser aborts on
+    // unknown flags.
+    //
+    // Only a finite positive value is exported. 0 and an unset config both mean "no cap",
+    // and the variable is withheld from inheritance in that case: a stray export in the
+    // host shell must not silently cap a helper the user never capped, which would be
+    // precisely the "official behaviour changed behind your back" failure D-E forbids.
+    const maxImageEdge = Number(this.config.maxImageEdge)
+    const capped = Number.isFinite(maxImageEdge) && maxImageEdge > 0
+    if (capped) extra.DSH_COMPUTER_USE_MAX_IMAGE_EDGE = String(maxImageEdge)
+    const { env, injected, excluded } = sanitizedEnvironment(
+      extra,
+      this.config.envAllowlist,
+      capped ? [] : ['DSH_COMPUTER_USE_MAX_IMAGE_EDGE'],
+    )
     let cmd = exe
     let cmdArgs = args
     if (exe.endsWith('.js') || exe.endsWith('.mjs')) {

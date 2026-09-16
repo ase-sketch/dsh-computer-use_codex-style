@@ -6,6 +6,7 @@ pub mod diagnostics;
 pub mod gnome_extension;
 pub mod helper;
 pub mod identity;
+pub mod image_edge;
 pub mod protocol;
 pub mod remote_desktop;
 pub mod screenshot;

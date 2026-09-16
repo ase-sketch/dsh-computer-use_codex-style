@@ -68,8 +68,22 @@ impl CaptureMethod {
 #[derive(Debug, Clone)]
 pub struct WindowCapture {
     pub png: Vec<u8>,
+    /// Width of the returned image, i.e. **after** the opt-in max-image-edge cap.
+    ///
+    /// This is the size the caller must declare to the model, so that the declared size
+    /// and the decoded image keep matching. See `coordinate_width` for the space input
+    /// coordinates are expressed in.
     pub width: u16,
+    /// Height of the returned image, i.e. **after** the opt-in max-image-edge cap.
     pub height: u16,
+    /// Width of the captured region in coordinates, i.e. **before** the cap.
+    ///
+    /// Equal to `width` unless `DSH_COMPUTER_USE_MAX_IMAGE_EDGE` is set. Input is
+    /// injected in this space, so a caller that scales the image for display must map
+    /// model coordinates back through it or every click lands off by the ratio.
+    pub coordinate_width: u16,
+    /// Height of the captured region in coordinates, i.e. **before** the cap.
+    pub coordinate_height: u16,
     /// Where the captured region starts in root coordinates.
     pub origin_x: i32,
     pub origin_y: i32,
@@ -77,6 +91,38 @@ pub struct WindowCapture {
     /// Set when the ideal mode was unavailable and a lesser one was used instead.
     pub degraded: Option<String>,
     pub frame_extents: FrameExtents,
+}
+
+impl WindowCapture {
+    /// Assemble a capture from the encoded image plus the region it came from.
+    ///
+    /// `encoded` is the size `encode_png` actually produced; the region size is the
+    /// coordinate space. When no cap is configured the two are equal, and this
+    /// constructor is the only place that decides that — every call site reports the
+    /// truth by construction instead of re-deriving it.
+    fn from_encoded(
+        encoded: (Vec<u8>, u16, u16),
+        region: (u16, u16),
+        origin: (i32, i32),
+        method: CaptureMethod,
+        degraded: Option<String>,
+        frame_extents: FrameExtents,
+    ) -> Self {
+        let (png, width, height) = encoded;
+        let (coordinate_width, coordinate_height) = region;
+        Self {
+            png,
+            width,
+            height,
+            coordinate_width,
+            coordinate_height,
+            origin_x: origin.0,
+            origin_y: origin.1,
+            method,
+            degraded,
+            frame_extents,
+        }
+    }
 }
 
 /// A System V shared memory segment, unmapped and removed on drop.
@@ -243,27 +289,25 @@ fn capture_on(
 /// window's redirection, which is not reproducible in the headless test session.
 fn fall_back_to_direct(
     composite: Result<WindowCapture>,
-    direct: impl FnOnce() -> Result<Vec<u8>>,
+    direct: impl FnOnce() -> Result<(Vec<u8>, u16, u16)>,
     geometry: WindowGeometry,
     frame_extents: FrameExtents,
 ) -> Result<WindowCapture> {
     match composite {
         Ok(capture) => Ok(capture),
         Err(error) => {
-            let png = direct()?;
-            Ok(WindowCapture {
-                png,
-                width: geometry.width,
-                height: geometry.height,
-                origin_x: geometry.x,
-                origin_y: geometry.y,
-                method: CaptureMethod::Direct,
-                degraded: Some(format!(
+            let encoded = direct()?;
+            Ok(WindowCapture::from_encoded(
+                encoded,
+                (geometry.width, geometry.height),
+                (geometry.x, geometry.y),
+                CaptureMethod::Direct,
+                Some(format!(
                     "XComposite capture unavailable, fell back to a direct window read \
                      (occluding windows may appear in the image): {error}"
                 )),
                 frame_extents,
-            })
+            ))
         }
     }
 }
@@ -295,7 +339,7 @@ fn capture_composited(
     raw.flush()
         .map_err(|error| anyhow!("flush after naming the window pixmap failed: {error}"))?;
 
-    let png = read_drawable_png(connection, pixmap, geometry.width, geometry.height);
+    let encoded = read_drawable_png(connection, pixmap, geometry.width, geometry.height);
     // Free the named pixmap before dropping the redirection; the resource belongs to
     // this client, and leaving it behind would leak one pixmap per capture.
     let freed = raw
@@ -303,19 +347,17 @@ fn capture_composited(
         .map_err(|error| anyhow!("free_pixmap could not be sent: {error}"))
         .and_then(|cookie| cookie.check().map_err(|error| anyhow!("{error:?}")));
     drop(guard);
-    let png = png?;
+    let encoded = encoded?;
     freed?;
 
-    Ok(WindowCapture {
-        png,
-        width: geometry.width,
-        height: geometry.height,
-        origin_x: geometry.x,
-        origin_y: geometry.y,
-        method: CaptureMethod::Composite,
-        degraded: None,
+    Ok(WindowCapture::from_encoded(
+        encoded,
+        (geometry.width, geometry.height),
+        (geometry.x, geometry.y),
+        CaptureMethod::Composite,
+        None,
         frame_extents,
-    })
+    ))
 }
 
 /// Direct capture: read the window drawable as it is shown.
@@ -323,7 +365,7 @@ fn capture_direct_png(
     connection: &X11Connection,
     window: Window,
     geometry: WindowGeometry,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, u16, u16)> {
     read_drawable_png(connection, window, geometry.width, geometry.height)
 }
 
@@ -333,7 +375,7 @@ fn read_drawable_png(
     drawable: u32,
     width: u16,
     height: u16,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, u16, u16)> {
     let raw = connection.inner();
     let shm_available = connection
         .inner()
@@ -400,7 +442,7 @@ fn read_drawable_png_slow(
     drawable: u32,
     width: u16,
     height: u16,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, u16, u16)> {
     let raw = connection.inner();
     let reply = raw
         .get_image(ImageFormat::Z_PIXMAP, drawable, 0, 0, width, height, !0)
@@ -411,12 +453,23 @@ fn read_drawable_png_slow(
     encode_png(&reply.data, width, height, bytes_per_pixel)
 }
 
-/// Pack server ZPixmap bytes into PNG.
+/// Pack server ZPixmap bytes into PNG, applying the DSH-only max-image-edge cap.
 ///
 /// X11 window pixels carry no meaningful alpha, so every pixel is written opaque; a
 /// 32-bit visual would otherwise produce a fully transparent PNG that looks broken in
 /// the model's view.
-fn encode_png(pixels: &[u8], width: u16, height: u16, bytes_per_pixel: usize) -> Result<Vec<u8>> {
+///
+/// The cap is applied *before* encoding, so the bytes that travel are the bytes the
+/// model reads and the reported size is the real size by construction. With no cap
+/// configured (`DSH_COMPUTER_USE_MAX_IMAGE_EDGE` unset or 0) the returned pair is exactly
+/// `(width, height)` and the encoded bytes are byte-for-byte what the official helper
+/// would have produced.
+fn encode_png(
+    pixels: &[u8],
+    width: u16,
+    height: u16,
+    bytes_per_pixel: usize,
+) -> Result<(Vec<u8>, u16, u16)> {
     let count = usize::from(width) * usize::from(height);
     let mut rgba = Vec::with_capacity(count * 4);
     for index in 0..count {
@@ -436,11 +489,36 @@ fn encode_png(pixels: &[u8], width: u16, height: u16, bytes_per_pixel: usize) ->
     }
     let image = image::RgbaImage::from_raw(u32::from(width), u32::from(height), rgba)
         .ok_or_else(|| anyhow!("could not build a {width}x{height} image from the capture"))?;
+
+    let (image, out_width, out_height) = match crate::image_edge::max_image_edge_from_env() {
+        Some(max_edge) => match crate::image_edge::scaled_dimensions(
+            u32::from(width),
+            u32::from(height),
+            max_edge,
+        ) {
+            // Triangle is the deterministic, cheap filter this knob wants: the cap exists to
+            // cut tokens on a wire screenshot, and a downward resize by a large factor makes
+            // the filter choice invisible to the model.
+            Some((target_width, target_height)) => (
+                image::imageops::resize(
+                    &image,
+                    target_width,
+                    target_height,
+                    image::imageops::FilterType::Triangle,
+                ),
+                target_width as u16,
+                target_height as u16,
+            ),
+            None => (image, width, height),
+        },
+        None => (image, width, height),
+    };
+
     let mut out = Cursor::new(Vec::new());
     image
         .write_to(&mut out, image::ImageFormat::Png)
         .map_err(|error| anyhow!("PNG encoding failed: {error}"))?;
-    Ok(out.into_inner())
+    Ok((out.into_inner(), out_width, out_height))
 }
 
 /// Capture the whole screen, for the cases window2 asks for screen-scoped pixels.
@@ -458,33 +536,37 @@ pub fn capture_root() -> Result<WindowCapture> {
             Ok(cookie) => cookie.check().map_err(|error| anyhow!("{error:?}")),
             Err(error) => Err(anyhow!("{error}")),
         };
-        let png = read_drawable_png(connection, connection.root(), width, height);
+        let encoded = read_drawable_png(connection, connection.root(), width, height);
         if let Ok(cookie) = raw.free_gc(gc) {
             let _ = cookie.check();
         }
         created?;
-        Ok(WindowCapture {
-            png: png?,
-            width,
-            height,
-            origin_x: 0,
-            origin_y: 0,
-            method: CaptureMethod::Direct,
-            degraded: None,
-            frame_extents: FrameExtents::default(),
-        })
+        Ok(WindowCapture::from_encoded(
+            encoded?,
+            // The root's region is the whole screen: the cap shrinks the image, while
+            // these stay the screen size the input coordinates are expressed in.
+            (width, height),
+            (0, 0),
+            CaptureMethod::Direct,
+            None,
+            FrameExtents::default(),
+        ))
     })?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The env var is process-global, so every module that sets it shares one lock.
+    use crate::image_edge::with_env as with_max_image_edge;
 
     #[test]
     fn png_encoding_marks_pixels_opaque() {
         // A 2x1 image: one red pixel, one blue pixel, in BGRA order.
         let pixels = [0x00u8, 0x00, 0xff, 0x00, 0xff, 0x00, 0x00, 0x00];
-        let png = encode_png(&pixels, 2, 1, 4).unwrap();
+        let (png, width, height) = encode_png(&pixels, 2, 1, 4).unwrap();
+        // With no cap configured the reported size is the natural size.
+        assert_eq!((width, height), (2, 1));
         assert_eq!(&png[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
         let decoded = image::load_from_memory(&png).unwrap().to_rgba8();
         assert_eq!(decoded.get_pixel(0, 0).0, [0xff, 0x00, 0x00, 0xff]);
@@ -492,9 +574,57 @@ mod tests {
     }
 
     #[test]
+    fn a_configured_max_image_edge_caps_the_encoded_png_and_reports_the_new_size() {
+        with_max_image_edge(Some("4"), || {
+            // A 8x4 source: the cap of 4 must halve it, and the reported size must be the
+            // encoded one so a caller can never declare a size the image does not have.
+            let mut pixels = Vec::new();
+            for index in 0..32u8 {
+                pixels.extend_from_slice(&[index, index, index, 0xff]);
+            }
+            let (png, width, height) = encode_png(&pixels, 8, 4, 4).unwrap();
+            assert_eq!((width, height), (4, 2));
+            let decoded = image::load_from_memory(&png).unwrap().to_rgba8();
+            assert_eq!(
+                (decoded.width(), decoded.height()),
+                (u32::from(width), u32::from(height)),
+                "the declared size must be the decoded size"
+            );
+        });
+    }
+
+    #[test]
+    fn an_image_within_the_cap_is_encoded_byte_for_byte_as_before() {
+        // "不传 env 时行为逐字节不变" in its strongest form: the same pixels encoded with a
+        // cap that does not bite must equal the no-cap bytes.
+        let mut pixels = Vec::new();
+        for index in 0..32u8 {
+            pixels.extend_from_slice(&[index, index, index, 0xff]);
+        }
+        let uncapped = encode_png(&pixels, 8, 4, 4).unwrap();
+        let capped_but_inert = with_max_image_edge(Some("8"), || encode_png(&pixels, 8, 4, 4).unwrap());
+        assert_eq!(uncapped, capped_but_inert);
+    }
+
+    #[test]
+    fn a_zero_max_image_edge_is_the_official_behaviour() {
+        let mut pixels = Vec::new();
+        for index in 0..32u8 {
+            pixels.extend_from_slice(&[index, index, index, 0xff]);
+        }
+        let uncapped = encode_png(&pixels, 8, 4, 4).unwrap();
+        let zero = with_max_image_edge(Some("0"), || encode_png(&pixels, 8, 4, 4).unwrap());
+        assert_eq!(uncapped, zero, "0 means no cap, exactly like the official helper");
+    }
+
+    #[test]
     fn a_truncated_buffer_is_an_error_not_a_partial_image() {
         let pixels = [0x00u8, 0x00, 0xff, 0x00];
         let error = encode_png(&pixels, 4, 1, 4).unwrap_err();
+        assert!(error.to_string().contains("ended early"));
+        // The 4x1 request cannot be satisfied by a 4-byte buffer, and the failure must not
+        // be masked by whatever cap happens to be configured.
+        let error = with_max_image_edge(Some("1"), || encode_png(&pixels, 4, 1, 4).unwrap_err());
         assert!(error.to_string().contains("ended early"));
     }
 
@@ -523,6 +653,7 @@ mod tests {
         assert_eq!(capture.method, CaptureMethod::Direct);
         assert_eq!(capture.width, 2);
         assert_eq!(capture.height, 1);
+        assert_eq!((capture.coordinate_width, capture.coordinate_height), (2, 1));
         assert_eq!(capture.origin_x, 40);
         let reason = capture.degraded.expect("the shortfall must be reported");
         assert!(reason.contains("XComposite"), "reason was: {reason}");
@@ -541,18 +672,16 @@ mod tests {
             height: 1,
         };
         let pixels = [0x00u8, 0x00, 0xff, 0x00, 0xff, 0x00, 0x00, 0x00];
-        let png = encode_png(&pixels, 2, 1, 4).unwrap();
+        let encoded = encode_png(&pixels, 2, 1, 4).unwrap();
         let capture = fall_back_to_direct(
-            Ok(WindowCapture {
-                png,
-                width: 2,
-                height: 1,
-                origin_x: 0,
-                origin_y: 0,
-                method: CaptureMethod::Composite,
-                degraded: None,
-                frame_extents: FrameExtents::default(),
-            }),
+            Ok(WindowCapture::from_encoded(
+                encoded,
+                (2, 1),
+                (0, 0),
+                CaptureMethod::Composite,
+                None,
+                FrameExtents::default(),
+            )),
             || panic!("the direct path must not be used when composite succeeded"),
             geometry,
             FrameExtents::default(),
