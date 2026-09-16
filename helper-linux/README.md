@@ -79,6 +79,11 @@ Methods: `health`, `tools`, `call`, `interrupt`, `shutdown`, `prompt`, `end_turn
 - `health` reports what the helper is and what actually works **on this machine**, taken from
   the crate's own diagnostics probes. Failed checks are listed verbatim under `degraded`;
   nothing is reported as working that did not prove it.
+- `health.experience` keeps **availability** and **activation** apart, because they are
+  different facts: `state` is `"off"` (this session has no layer), `"available"` (the layer
+  exists and nothing is armed) or `"armed"` (a turn is live), and `armed`/`escapeGrab` report
+  the specifics. A layer that negotiated every extension but was never armed must not be
+  able to call itself `"on"`.
 - `tools` lists exactly the seven exposed tools, with the crate's own JSON Schemas.
 - `call` returns `{ok, name, value, images}`. Screenshot pixels are never inlined into `value`:
   each image becomes its own part as `{mimeType, data, name}` with the `data:` URL prefix
@@ -153,6 +158,43 @@ that already owns the window's redirection).
 All of this is verified in this repository under Xvfb, without a window manager; the
 compositor-conflict and window-manager cases are listed as unverified in the integration-test
 section above, not asserted.
+
+## Experience layer (X11)
+
+On an X11 session the helper also runs the window2 experience layer: an override-redirect
+status pill, a synthesized pointer with the real one suppressed through XFixes, a freshness
+lease fed by XInput2 raw events, and Escape as a global interrupt.
+
+**It arms on observation, whichever surface the call arrived on.** A `get_window_state`,
+`get_app_state` or `screenshot` call arms the turn: the pill comes up, the synthesized pointer
+takes over, the Escape grab is installed and the lease starts watching for human input. A call
+that changes the desktop (`click`, `press_key`, `type_text`, `scroll`, `set_value`, `drag`,
+`perform_secondary_action`, `activate_window`) shows the pill in its working state while it runs.
+Calls that only read a table (`list_windows`, `get_window`, `list_apps`) do not arm anything, and
+`launch_app` is not implemented on X11. `end_turn`, `interrupt` and `shutdown` hand the desktop
+back: the overlays are unmapped, the real pointer is restored, the lease is flushed and the
+grab is released.
+
+Two things about that are deliberate:
+
+- **The layer is per X session, not per surface.** The plugin's default Linux surface is the
+  P1 sky.window one, so arming only window2 faces would leave the pill, the synthesized
+  cursor and the Escape interrupt absent on the default path — the layer would exist and
+  never run. Both surfaces arm the same single layer, and arming never changes what a call
+  returns.
+- **This differs from the Windows helper, on purpose.** `helper-rs` arms from its overlay's
+  `show()`, which only its input methods call, so a Windows observation does not arm;
+  here observation does. That matches this crate's own rule ("observation begins for this
+  turn") and is what the pill is for — telling the operator that the machine is being looked
+  at.
+
+**A refused Escape grab is a normal desktop, not a failure.** The bare Escape combination is
+routinely held by the compositor's own global shortcut (KWin holds it on the machine this was
+verified on), and a second client asking for it gets `BadAccess`. The layer stays fully
+functional: XInput2 raw key events are delivered whether or not the grab was granted, so an
+armed Escape is still an interrupt (measured: 147 ms from the keystroke to the desktop being
+handed back). `health.experience.escapeGrab.state` then reads `"refused"` and
+`health.experience.degraded` says so in words — never `"installed"`.
 
 ## Environment notes
 

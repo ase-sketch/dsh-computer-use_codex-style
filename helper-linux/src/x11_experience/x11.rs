@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
-use x11rb::protocol::Event;
+use x11rb::protocol::{ErrorKind, Event};
 use x11rb::protocol::xfixes;
 use x11rb::protocol::xinput;
 use x11rb::protocol::xproto::{self, Window};
@@ -73,6 +73,49 @@ struct Shared {
     /// Last error, so diagnostics never claim success for a failed primitive.
     last_error: Mutex<Option<String>>,
     capabilities: Mutex<serde_json::Value>,
+    /// What the X thread last managed to do about the Escape key.
+    esc_grab: Mutex<EscGrab>,
+}
+
+/// How Escape is actually being detected right now.
+///
+/// A refused grab is a NORMAL outcome on a real desktop rather than a failure of the
+/// layer: the "none" modifier combination on Escape is routinely held by the
+/// compositor's own global-shortcut client (KWin holds it on this machine), and a
+/// second client asking for the same combination is answered with BadAccess. XInput2
+/// raw key events are delivered to this client whether or not it owns the grab, so the
+/// interrupt still works -- but health and diagnostics must say which path is live
+/// instead of reporting a grab that the server never granted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EscGrab {
+    /// True once the layer has tried to grab at least once.
+    tried: bool,
+    /// True while the root grab is held.
+    installed: bool,
+    /// Why the grab is not held, verbatim from the server.
+    note: Option<String>,
+}
+
+impl Default for EscGrab {
+    fn default() -> Self {
+        EscGrab { tried: false, installed: false, note: None }
+    }
+}
+
+impl EscGrab {
+    fn state(&self) -> &'static str {
+        if self.installed {
+            "installed"
+        } else if self.tried {
+            "refused"
+        } else {
+            "untried"
+        }
+    }
+
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({ "state": self.state(), "note": self.note })
+    }
 }
 
 /// Handle held by the helper: cheap to clone, all methods are non-blocking.
@@ -102,16 +145,16 @@ impl Handle {
         if let Ok(mut lease) = self.shared.lease.lock() {
             lease.observe(Instant::now());
         }
-        let visible = self.shared.pill.lock().map(|p| p.is_visible()).unwrap_or(false);
         if let Ok(mut p) = self.shared.pill.lock() {
             p.show(PillState::Observing, Instant::now());
             p.pulse(Instant::now());
         }
-        if visible {
-            self.send(Command::Working);
-        } else {
-            self.send(Command::Begin { label: PillState::Observing.label() });
-        }
+        // Re-state the pill as observing. Begin is idempotent (the grab is held and the
+        // overlays are mapped already), so this repaints the overlay rather than arming
+        // a second time. It deliberately does NOT go through Working: a fresh
+        // observation labelled "working" would contradict both the shared pill state
+        // and the sentence the operator reads.
+        self.send(Command::Begin { label: PillState::Observing.label() });
     }
 
     /// A tool action is in flight.
@@ -184,6 +227,20 @@ impl Handle {
         }
     }
 
+    /// Whether the layer is armed for the current turn.
+    pub fn is_armed(&self) -> bool {
+        self.shared.lease.lock().map(|lease| lease.is_armed()).unwrap_or(false)
+    }
+
+    /// How Escape is being detected: the root grab, or only XInput2 raw events.
+    pub fn escape_grab(&self) -> serde_json::Value {
+        self.shared
+            .esc_grab
+            .lock()
+            .map(|grab| grab.json())
+            .unwrap_or(serde_json::Value::Null)
+    }
+
     pub fn diagnostics(&self) -> serde_json::Value {
         let (tx, rx) = std::sync::mpsc::channel();
         let _ = self.tx.send(Command::Query(tx));
@@ -202,6 +259,8 @@ impl Handle {
             "pill": pill,
             "capabilities": caps,
             "escaped": self.shared.escaped.load(Ordering::SeqCst),
+            "armed": self.is_armed(),
+            "escapeGrab": self.escape_grab(),
             "lastError": error,
             "x11": x11,
         })
@@ -384,22 +443,99 @@ impl Platform {
     /// events delivered, against 12 delivered to a root grab. It is released the
     /// instant the turn ends, because a root grab the helper forgot about would
     /// swallow the operator's own Escape for the rest of the session.
-    fn set_esc_grab(&mut self, on: bool) {
-        let Some(code) = self.esc_keycode else { return };
+    fn set_esc_grab(&mut self, on: bool, note: &Mutex<EscGrab>) {
+        if on {
+            if let Ok(mut grab) = note.lock() {
+                grab.tried = true;
+            }
+        }
         if on == self.esc_grabbed {
             return;
         }
+        let Some(code) = self.esc_keycode else {
+            self.record_grab(note, false, "this keymap has no Escape keycode, so no grab is possible");
+            return;
+        };
         let result = if on {
             xproto::grab_key(&self.conn, false, self.root, xproto::ModMask::ANY, code, xproto::GrabMode::ASYNC, xproto::GrabMode::ASYNC)
         } else {
             xproto::ungrab_key(&self.conn, code, self.root, xproto::ModMask::ANY)
         };
         match result.map(|c| c.check()) {
-            Ok(Ok(())) => self.esc_grabbed = on,
-            Ok(Err(e)) => eprintln!("x11-experience: escape grab {} failed: {e}", if on { "install" } else { "release" }),
-            Err(e) => eprintln!("x11-experience: escape grab {} failed: {e}", if on { "install" } else { "release" }),
+            Ok(Ok(())) => {
+                self.esc_grabbed = on;
+                if on {
+                    self.record_grab(note, true, "");
+                }
+            }
+            // A refused install is a normal desktop outcome, not a panic: the "none"
+            // modifier combination on Escape is routinely held by the compositor's own
+            // global-shortcut client, and a second client asking for the same
+            // combination is answered with BadAccess. Recording the reason is what lets
+            // health report raw-key detection instead of a grab nobody granted.
+            Ok(Err(e)) => {
+                // The recorded state must be what the server actually granted, not what
+                // we asked for: an install that failed leaves no grab, while a RELEASE
+                // that failed leaves the grab still held. Saying "installed" for a
+                // refused install is the exact contradiction the real-desktop run
+                // caught -- state=installed next to a BadAccess note.
+                self.record_grab(note, self.esc_grabbed, &self.grab_failure_reason(on));
+                eprintln!("x11-experience: escape grab {} failed: {e}", if on { "install" } else { "release" });
+            }
+            Err(e) => {
+                self.record_grab(note, false, &e.to_string());
+                eprintln!("x11-experience: escape grab {} failed: {e}", if on { "install" } else { "release" });
+            }
         }
         let _ = self.conn.flush();
+    }
+
+    /// Publish the grab outcome where diagnostics and health can read it.
+    fn record_grab(&self, note: &Mutex<EscGrab>, installed: bool, reason: &str) {
+        if let Ok(mut grab) = note.lock() {
+            grab.tried = true;
+            grab.installed = installed;
+            grab.note = if reason.is_empty() { None } else { Some(reason.to_string()) };
+        }
+    }
+
+    /// The sentence recorded when the grab itself was refused.
+    ///
+    /// BadAccess is named as such because it is the compositor's own Escape binding, and
+    /// the layer keeps working through XInput2 -- reporting "BadAccess" alone would look
+    /// like a broken primitive rather than a desktop that already uses that key.
+    fn grab_failure_reason(&self, on: bool) -> String {
+        let access = self.refused_with_bad_access(on);
+        let action = if on { "install" } else { "release" };
+        if access {
+            format!(
+                "the server refused the {action} with BadAccess: another client already owns the Escape key combination (a compositor global shortcut); Escape is still detected through XInput2 raw key events"
+            )
+        } else {
+            format!("the server refused the {action} of the root Escape grab")
+        }
+    }
+
+    /// Whether the server refused the grab with BadAccess.
+    ///
+    /// BadAccess is the one refusal that is a property of the desktop rather than of this
+    /// helper: another client already owns that key combination. It is also the one that
+    /// still leaves the layer fully functional, because XInput2 raw key events bypass
+    /// grabs entirely -- so it is worth naming separately from a generic failure.
+    fn refused_with_bad_access(&self, on: bool) -> bool {
+        let Some(code) = self.esc_keycode else { return false };
+        let probe = if on {
+            xproto::grab_key(&self.conn, false, self.root, xproto::ModMask::ANY, code, xproto::GrabMode::ASYNC, xproto::GrabMode::ASYNC)
+        } else {
+            // Ungrabbing something this client does not hold is not an error either; an
+            // error here means the connection itself refused the request.
+            xproto::ungrab_key(&self.conn, code, self.root, xproto::ModMask::ANY)
+        };
+        matches!(
+            probe.map(|cookie| cookie.check()),
+            Ok(Err(x11rb::errors::ReplyError::X11Error(error)))
+                if error.error_kind == ErrorKind::Access
+        )
     }
 
     /// Blank the real pointer. XFixes hides it for the whole screen when asked on the
@@ -527,11 +663,11 @@ impl Platform {
 
     /// Put the desktop back: no pill, no synthesized pointer, the real pointer
     /// visible, Escape released. Safe to call twice.
-    fn restore(&mut self) {
+    fn restore(&mut self, note: &Mutex<EscGrab>) {
         self.hide_pill();
         self.hide_cursor();
         self.set_cursor_hidden(false);
-        self.set_esc_grab(false);
+        self.set_esc_grab(false, note);
         self.pressed_at = None;
         self.drawn = None;
     }
@@ -555,9 +691,11 @@ impl Platform {
         }
     }
 
-    fn diagnostics_view(&self, active: bool) -> serde_json::Value {
+    fn diagnostics_view(&self, active: bool, grab: &EscGrab) -> serde_json::Value {
         serde_json::json!({
             "ok": true,
+            "grabState": grab.state(),
+            "grabNote": grab.note,
             "pointer": [self.last_pointer.0, self.last_pointer.1],
             "grab": self.esc_grabbed,
             "suppressed": self.cursor_hidden,
@@ -579,6 +717,7 @@ pub fn spawn() -> Result<(Handle, serde_json::Value), String> {
         escaped: AtomicBool::new(false),
         last_error: Mutex::new(None),
         capabilities: Mutex::new(capabilities.clone()),
+        esc_grab: Mutex::new(EscGrab::default()),
     });
     let interrupt = Arc::new(tokio::sync::Notify::new());
     let thread_shared = Arc::clone(&shared);
@@ -611,7 +750,7 @@ fn run(
             match command {
                 Command::Begin { label } => {
                     active = true;
-                    platform.set_esc_grab(true);
+                    platform.set_esc_grab(true, &shared.esc_grab);
                     platform.set_cursor_hidden(true);
                     platform.pressed_at = None;
                     let rect = shared
@@ -638,14 +777,15 @@ fn run(
                 }
                 Command::Restore => {
                     active = false;
-                    platform.restore();
+                    platform.restore(&shared.esc_grab);
                 }
                 Command::Shutdown => {
-                    platform.restore();
+                    platform.restore(&shared.esc_grab);
                     return;
                 }
                 Command::Query(reply) => {
-                    let _ = reply.send(platform.diagnostics_view(active));
+                    let grab = shared.esc_grab.lock().map(|g| g.clone()).unwrap_or_default();
+                    let _ = reply.send(platform.diagnostics_view(active, &grab));
                 }
             }
         }
@@ -668,8 +808,20 @@ fn run(
                         // Escape is out-of-band: latch it for the helper, put the
                         // desktop back, and let helper.rs stop the in-flight call.
                         shared.escaped.store(true, Ordering::SeqCst);
+                        // Disarm the lease as well as the X state. Without this the
+                        // desktop was handed back while the lease still called the turn
+                        // armed, so the operator's very next keystroke -- starting with
+                        // the Escape release that is still in flight -- counted as human
+                        // input and re-mapped the pill in its "user took over" state. The
+                        // desktop must stay handed back until the helper arms a new turn.
+                        if let Ok(mut lease) = shared.lease.lock() {
+                            lease.disarm();
+                        }
+                        if let Ok(mut p) = shared.pill.lock() {
+                            p.hide(Instant::now());
+                        }
                         active = false;
-                        platform.restore();
+                        platform.restore(&shared.esc_grab);
                         interrupt.notify_waiters();
                         continue;
                     }
@@ -738,7 +890,7 @@ fn run(
             Ok(command) => pending.push_back(command),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
-                platform.restore();
+                platform.restore(&shared.esc_grab);
                 return;
             }
         }
@@ -770,6 +922,42 @@ mod tests {
         assert_eq!(KEYSYM_ESCAPE, 0xff1b);
         let fallback: u8 = 9;
         assert_eq!(fallback, 9, "the 9 fallback is what a missing Escape keycode falls back to");
+    }
+
+    #[test]
+    fn a_refused_grab_is_reported_as_refused_not_as_installed() {
+        // Caught on the real KWin desktop: state said "installed" while the note said
+        // BadAccess. A degraded primitive and a working one must not be able to describe
+        // themselves the same way, or health is worse than useless.
+        let refused = EscGrab { tried: true, installed: false, note: Some("BadAccess".into()) };
+        assert_eq!(refused.state(), "refused");
+        let installed = EscGrab { tried: true, installed: true, note: None };
+        assert_eq!(installed.state(), "installed");
+        let untried = EscGrab::default();
+        assert_eq!(untried.state(), "untried");
+        // An untried grab is not degraded behaviour: no turn has run yet.
+        assert_ne!(untried.state(), refused.state());
+    }
+
+    #[test]
+    fn escape_hands_the_turn_back_instead_of_only_undrawing_it() {
+        // The bug this guards, caught by the JSONL integration test rather than by
+        // inspection: the Escape branch put the X state back but left the LEASE armed, so
+        // the operator's next raw input -- starting with the Escape release still in
+        // flight -- was still counted as human input and re-mapped the pill on a desktop
+        // that had already been handed back. A turn that has been handed back must stay
+        // handed back until the helper arms a new one.
+        let mut lease = Lease::new();
+        lease.arm(Instant::now());
+        lease.observe(Instant::now());
+        assert!(lease.is_armed());
+        lease.disarm();
+        assert!(!lease.is_armed());
+        // The next human keystroke is now a plain key on the operator's own desktop.
+        assert_eq!(
+            lease.note_input(StaleReason::HumanKey, Instant::now() + Duration::from_secs(1)),
+            None
+        );
     }
 
     #[test]

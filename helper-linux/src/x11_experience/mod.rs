@@ -99,6 +99,22 @@ impl Session {
         self.handle.take_escaped()
     }
 
+    /// True while the layer is armed for the current turn (the pill is up, the
+    /// synthesized pointer has taken over and the lease is watching for human input).
+    ///
+    /// This is deliberately separate from capabilities(): a session can negotiate
+    /// every extension and still be *idle*, which is the normal state between turns.
+    pub fn is_armed(&self) -> bool {
+        self.handle.is_armed()
+    }
+
+    /// How Escape is being detected. "state" is one of "untried", "installed"
+    /// (the root grab is held) or "refused" (the server answered BadAccess, so only
+    /// XInput2 raw-key detection is live); "note" carries the server's own words.
+    pub fn escape_grab(&self) -> serde_json::Value {
+        self.handle.escape_grab()
+    }
+
     /// The signal to select on in order to stop an in-flight call.
     pub fn interrupt_notice(&self) -> Arc<tokio::sync::Notify> {
         self.handle.interrupt_notice()
@@ -174,20 +190,51 @@ pub fn x11_session_from(display: Option<&str>, session_type: Option<&str>, wayla
     }
 }
 
-/// One coarse diagnostic for `health`: "off", or the negotiated capabilities.
+/// What the experience layer is doing right now, for `health`.
 ///
-/// Exactly one field is added to the health payload so this module cannot grow the
-/// health contract behind the integration line's back.
+/// The old summary reported a bare `"state": "on"` as soon as the extensions had been
+/// negotiated, which was true of the negotiation and false of the layer: nothing armed
+/// it, so the pill was never mapped and the Escape grab was never installed while
+/// `health` claimed the layer was on. Availability and activation are two different
+/// facts and are now two different fields:
+///
+/// * `available` -- the session has a layer at all (an X11 session whose X connection
+///   opened and whose capabilities were probed);
+/// * `state` -- `"off"` (no layer), `"available"` (idle, nothing armed) or `"armed"`
+///   (a turn is live: the pill is mapped, the pointer is taken over, the lease is
+///   watching for human input);
+/// * `armed`, `escapeGrab` -- the specifics, so a refusal (BadAccess from the
+///   compositor's own Escape binding) is reported rather than hidden.
 pub fn health_summary() -> serde_json::Value {
     match session() {
-        None => serde_json::json!({"state": "off"}),
+        None => serde_json::json!({
+            "state": "off",
+            "available": false,
+            "armed": false,
+            "note": "no experience layer on this session (not X11, or the X connection could not be opened)",
+        }),
         Some(session) => {
             let caps = session.capabilities();
+            let armed = session.is_armed();
+            let grab = session.escape_grab();
+            // Only a refusal is worth a diagnostic sentence: an untried grab is simply
+            // "no turn has run yet", which is not degraded behaviour.
+            let degraded = match grab["state"].as_str() {
+                Some("refused") => Some(format!(
+                    "Escape is detected through XInput2 raw key events only: the root grab was refused ({})",
+                    grab["note"].as_str().unwrap_or("no reason reported")
+                )),
+                _ => None,
+            };
             serde_json::json!({
-                "state": "on",
+                "state": if armed { "armed" } else { "available" },
+                "available": true,
+                "armed": armed,
                 "pill": caps["xfixesCursorSuppression"],
                 "rawEvents": caps["rawEvents"],
                 "pollingFallback": caps["pointerPollingFallback"],
+                "escapeGrab": grab,
+                "degraded": degraded,
             })
         }
     }
@@ -218,9 +265,27 @@ mod tests {
     }
 
     #[test]
-    fn health_is_one_field_and_never_an_empty_object() {
+    fn health_never_reports_availability_as_activation() {
+        // The defect this guards: health said "on" whenever the extensions had been
+        // negotiated, so an idle layer that had never armed anything looked identical
+        // to a live turn. Availability and activation are separate facts now, and
+        // "armed" is only ever produced by a layer that really armed.
         let summary = health_summary();
-        assert!(summary.get("state").is_some());
-        assert!(matches!(summary["state"].as_str(), Some("on") | Some("off")));
+        assert!(summary.get("available").is_some());
+        assert!(matches!(
+            summary["state"].as_str(),
+            Some("off") | Some("available") | Some("armed")
+        ));
+        match summary["state"].as_str() {
+            Some("off") => {
+                assert_eq!(summary["available"], serde_json::json!(false));
+                assert_eq!(summary["armed"], serde_json::json!(false));
+            }
+            _ => {
+                assert_eq!(summary["available"], serde_json::json!(true));
+                // The two must agree, or one of them is lying.
+                assert_eq!(summary["armed"], serde_json::json!(summary["state"] == serde_json::json!("armed")));
+            }
+        }
     }
 }
