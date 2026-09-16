@@ -225,6 +225,38 @@ Screenshots returned by `get_window_state` are displayed automatically. Inspect 
 - For drawing or handwriting or canvas or 3D viewport manipulation tasks, use `drag` strokes directly on the canvas.
 - Prefer Browser Use plugin for browser automation.
 
+## Linux Runtime Guidance (P1 sky.window)
+
+### Target Selection and Workflow
+
+On Linux, `helper-linux` exposes the 7-tool sky.window surface. Window targeting operates via strings: either an app name/id (e.g. `"gedit"`, `"firefox"`) or a specific window target formatted as `"linux-window:<id>"`.
+
+```js
+// 1. Discover available targets
+const apps = await sky.list_apps();
+
+// 2. Select target (by app id or specific linux-window:<id>)
+const target = "linux-window:123456"; // or "gedit"
+
+// 3. Observe: get state (screenshot + AT-SPI text when available) or standalone screenshot
+const state = await sky.get_app_state({ app: target });
+// Or call standalone screenshot:
+const shot = await sky.screenshot({ app: target });
+
+// 4. Act: coordinate-based inputs
+await sky.click({ app: target, x: 200, y: 150 });
+await sky.type_text({ app: target, text: "Sample text" });
+await sky.press_key({ app: target, key: "Return" });
+await sky.scroll({ app: target, direction: "down", pages: 2 });
+```
+
+### Key Linux Runtime Differences
+
+- **Coordinate-only input**: Unlike Windows window2, Linux P1 does not support `element_index` targeting. All clicks and scrolls must supply window-relative `x` and `y` coordinates observed from the screenshot.
+- **No drag / set_value**: For editable text fields, click the field coordinate to establish focus, select existing text using keyboard shortcuts (e.g. `press_key({ app: target, key: "Control_L+a" })`), and then type via `type_text`.
+- **Portal authorization prompt**: Under Wayland, XDG Desktop Portal prompts the user with an OS authorization dialog on the first screenshot or input call. If an operation times out or returns an authorization error, notify the user to grant screen sharing and remote desktop permissions.
+- **AT-SPI accessibility**: If AT-SPI2 is enabled in the environment, `get_app_state` includes the accessibility text hierarchy in `state.text`. If AT-SPI is disabled, `state.text` will be empty; proceed using visual screenshots and coordinate actions.
+
 ## Non-negotiable Windows Automation Safety
 
 These denies are mandatory. Confirmation policy applies only to allowed-but-confirmed actions and cannot replace these denies.
