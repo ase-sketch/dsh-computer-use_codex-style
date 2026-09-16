@@ -117,6 +117,7 @@ again solely for inspection.
 - For text entry into a document, slide, sheet, editor, or canvas, click a stable point inside the editable work surface, refresh to verify focus, then type.
 - For drawing, handwriting, canvas, or 3D viewport manipulation, use `drag` strokes directly on the canvas.
 - For browser work prefer the `computer-use-browser` skill over pixels.
+- **Backup observation channel (备选观察通道)**: the desktop OCR/vision tools (e.g. `mcp__nuphus-mcp__desktop_perceive` / `desktop_vision`) may be used as a SECONDARY way to read the screen when the `get_window_state` screenshot channel is malfunctioning (empty or blank images), or when tiny elements in an Electron app are unreadable in a downscaled screenshot. Reading only — every action still goes through Computer Use tools, and coordinate actions need the `screenshotId` from a real CU observation, so re-observe with `get_window_state` before clicking. A broken screenshot channel is a bug: report it instead of settling into OCR mode.
 
 ## Efficiency tactics (高效战术)
 
