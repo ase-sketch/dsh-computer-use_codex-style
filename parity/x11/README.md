@@ -79,5 +79,17 @@ parity/x11/
 
 ## 5. 约束与已知环境状态
 
-- **无 WM 降级说明**：当前系统环境未安装 `openbox`，且普通用户无免密 `sudo` 权限，遵照安全纪律不硬试提权安装。运行器会自动检测并打印提示，降级到无 WM 模式运行。基础 X11 绘制、截图与输入均不受影响，部分依赖 EWMH（如 `_NET_ACTIVE_WINDOW`、窗口最大化等）的特性在此环境下受限。若宿主未来安装了 openbox，运行器将自动无感启用。
+- **无 WM 降级说明**：当前系统环境未安装 `openbox`，且普通用户无免密 `sudo` 权限，遵照安全纪律不硬试提权安装。运行器会自动检测并打印提示，降级到无 WM 模式运行。
+  - 枚举回退：无 WM 时 `_NET_SUPPORTING_WM_CHECK` 与 `_NET_CLIENT_LIST` 为空，窗口枚举回退至 `query_tree` 遍历；坐标换算因无 `_NET_FRAME_EXTENTS` 回退至 `translate_coordinates` + `get_geometry`。
+  - 若宿主未来安装了 openbox，运行器将自动无感启用。
+- **Xvfb 绘图时序防坑纪律（Core 实测 S0 沉淀）**：
+  - 在 Xvfb 下若窗口「先画图再 map_window」，会被 map 时的背景重绘刷掉内容；
+  - 正确规范：**map 后必须等待 Expose 事件到达再执行绘制**，避免测试用例出现假失败。
+- **扩展协议就绪度（Core 实测 S0 确认）**：
+  - `XFixes` 6.0：`hide_cursor` 在 Xvfb 对任意窗口调用均被正确接受；
+  - `MIT-SHM` 1.2：`shared_pixmaps=true`，支持全屏共享内存直采；
+  - `XTest` 2.2：键盘与指针事件实测均可直接精准送达；
+  - `XComposite`：遮挡截图正确路径为 `redirect_window` + `NameWindowPixmap`（pixmap 参数必须是 `generate_id()` 未分配的新 XID，不可预先 `create_pixmap`）。
+- **截图场景断言规范**：
+  - 后续用例针对窗口截图须显式区分「未被遮挡」与「被遮挡」两类场景；被遮挡场景断言其像素输出严格为目标窗口自身内容，不含遮挡物像素。
 - **孤儿进程清理**：运行器与客户端均挂载了严密的进程生命周期管理机制，退出或中断时通过 `SIGTERM` + `SIGKILL` 双重保障清理 Xvfb 与 helper 进程，避免进程泄露。

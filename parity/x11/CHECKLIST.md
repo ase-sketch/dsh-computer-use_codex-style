@@ -52,8 +52,10 @@
       `screenshot` 返回非空 images 列表，MIME 为 `image/png`，解码后的二进制流严格以 PNG 魔数（`\x89PNG\r\n\x1a\n`）开头，字节长度与返回元数据一致，宽高非零
 - [ ] **XShm 共享内存全屏直采**（P2 core）：
       X11 会话下利用 `MIT-SHM` 协议扩展直接从 Xvfb framebuffer 读取，绕过 portal 弹窗
-- [ ] **窗口局部裁剪与遮挡捕获**（P2 core）：
-      当目标窗口部分被遮挡或位于非顶层时，能够正确捕获窗口 client rect 并产出局部截图
+- [ ] **未被遮挡窗口捕获（Unoccluded Capture）**（P2 core）：
+      当窗口位于最顶层且无遮挡时，通过局部 rect 裁剪或 XShm 直采获取精准像素
+- [ ] **被遮挡窗口捕获（Occluded Capture via XComposite）**（P2 core，S0 已验证路径）：
+      当目标窗口被上层窗口完全或部分遮挡时，必须走 XComposite `redirect_window` + `NameWindowPixmap` 机制获取窗口独立 backing pixmap，断言产出内容为「窗口自身内容且不含遮挡物像素」；测试程序在 Xvfb 绘制时遵循「map 后等待 Expose 事件再绘制」纪律防止背景重绘假失败
 
 ---
 
