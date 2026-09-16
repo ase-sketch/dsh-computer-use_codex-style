@@ -7,7 +7,7 @@ import { Context } from '@deepseek-ai/cordis'
 import ComputerUseService, { Config as HostConfig } from '../src/index.js'
 import { Config as ToolConfig, apply as applyTools } from '../src/tool.js'
 import { nativeHelperCandidates } from '../src/paths.js'
-import { Sidecar, usesPython, pythonCatalog, LINUX_CALLS } from '../src/sidecar.js'
+import { Sidecar, usesPython, pythonCatalog, LINUX_CALLS, WINDOW2_CALLS } from '../src/sidecar.js'
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const stubHelper = path.join(pluginRoot, 'scripts', 'stub-linux-helper.mjs')
@@ -214,3 +214,293 @@ test('P1-E2E-SMOKE sidecar end-to-end with stub-linux-helper', async () => {
     else delete process.env.DSH_COMPUTER_USE_HELPER
   }
 })
+
+const EXPECTED_WINDOW2_TOOLS = [
+  'list_windows',
+  'get_window',
+  'list_apps',
+  'launch_app',
+  'get_window_state',
+  'click',
+  'press_key',
+  'type_text',
+  'scroll',
+  'set_value',
+  'drag',
+  'perform_secondary_action',
+  'activate_window',
+]
+
+test('P2-ROUTING WINDOW2_CALLS definition and usesPython routing under backend=linux', () => {
+  assert.equal(WINDOW2_CALLS.size, 13)
+  for (const name of EXPECTED_WINDOW2_TOOLS) {
+    assert.ok(WINDOW2_CALLS.has(name), 'WINDOW2_CALLS must contain ' + name)
+  }
+
+  // Under backend='linux', all 13 window2 methods stay on native helper
+  for (const name of EXPECTED_WINDOW2_TOOLS) {
+    assert.equal(
+      usesPython('call', { name }, 'linux'),
+      false,
+      name + ' must stay on native helper when backend=linux',
+    )
+  }
+
+  // Under backend='windows', all 13 window2 methods stay on native helper too
+  for (const name of EXPECTED_WINDOW2_TOOLS) {
+    assert.equal(
+      usesPython('call', { name }, 'windows'),
+      false,
+      name + ' must stay on native helper when backend=windows',
+    )
+  }
+
+  // Browser calls still use Python on both platforms
+  assert.equal(usesPython('call', { name: 'create_tab' }, 'linux'), true)
+  assert.equal(usesPython('call', { name: 'create_tab' }, 'windows'), true)
+
+  // batch_actions with window2 actions stays on native helper
+  assert.equal(
+    usesPython('call', { name: 'batch_actions', arguments: { actions: [{ name: 'click' }, { name: 'set_value' }] } }, 'linux'),
+    false,
+  )
+  // batch_actions with unknown action uses Python
+  assert.equal(
+    usesPython('call', { name: 'batch_actions', arguments: { actions: [{ name: 'create_tab' }] } }, 'linux'),
+    true,
+  )
+})
+
+test('P2-TOOL-REGISTRATION backend=linux with surface=computer registers 13 window2 tools', async () => {
+  const registered = new Map()
+  const calls = []
+
+  const dshComputerUse = {
+    config: { backend: 'linux', surface: 'computer' },
+    tools: async surface => {
+      assert.equal(surface, 'computer')
+      return {
+        surface: 'computer',
+        tools: EXPECTED_WINDOW2_TOOLS.map(name => ({
+          name,
+          description: 'Window2 Tool ' + name,
+          parameters: { type: 'object', properties: {} },
+        })),
+      }
+    },
+    call: async (name, args, signal, meta) => {
+      calls.push({ name, args, meta })
+      return { ok: true, name, value: { done: name }, images: [] }
+    },
+    health: async () => ({ ok: true, codexRequired: false, backend: 'linux', surface: 'computer' }),
+    releaseOverlay: async () => ({ ok: true }),
+    shutdownSidecar: async () => {},
+  }
+
+  const ctx = {
+    dshComputerUse,
+    on() {},
+    effect(fn) { fn() },
+    get() { return undefined },
+    tools: {
+      register(tool) {
+        registered.set(tool.name, tool)
+      },
+    },
+    systemPrompt: { section() {} },
+  }
+
+  await applyTools(ctx, ToolConfig({}))
+
+  for (const name of EXPECTED_WINDOW2_TOOLS) {
+    assert.ok(registered.has(name), 'missing registered window2 tool: ' + name)
+  }
+  assert.ok(registered.has('computer_use_health'), 'must register health tool')
+  assert.ok(registered.has('computer_use_experience'), 'must register experience tool')
+
+  // Execute a window2 tool (drag) and check dispatch
+  const dragTool = registered.get('drag')
+  const res = await dragTool.execute(
+    { window: { id: 101, app: 'gedit' }, from_x: 10, from_y: 20, to_x: 100, to_y: 200 },
+    { agent: { id: 'test' } },
+  )
+  assert.deepEqual(res.value, { done: 'drag' })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].name, 'drag')
+  assert.deepEqual(calls[0].args, { window: { id: 101, app: 'gedit' }, from_x: 10, from_y: 20, to_x: 100, to_y: 200 })
+})
+
+test('P2-E2E-SMOKE-WINDOW2 sidecar end-to-end window2 surface with stub-linux-helper', async () => {
+  const sidecar = new Sidecar({
+    backend: 'linux',
+    surface: 'computer',
+    engineRoot: pluginRoot,
+  })
+
+  const origEnv = process.env.DSH_COMPUTER_USE_HELPER
+  process.env.DSH_COMPUTER_USE_HELPER = stubHelper
+
+  try {
+    const health = await sidecar.request('health')
+    assert.equal(health.backend, 'linux')
+    assert.equal(health.codexRequired, false)
+
+    const listed = await sidecar.request('tools')
+    assert.equal(listed.surface, 'computer')
+    const names = listed.tools.map(t => t.name)
+    assert.deepEqual(names.sort(), [...EXPECTED_WINDOW2_TOOLS].sort())
+
+    // Test list_windows
+    const winList = await sidecar.request('call', { name: 'list_windows', arguments: {} })
+    assert.equal(winList.ok, true)
+    assert.ok(Array.isArray(winList.value))
+    assert.equal(winList.value[0].id, 101)
+
+    // Test get_window
+    const win = await sidecar.request('call', { name: 'get_window', arguments: { id: 101 } })
+    assert.equal(win.ok, true)
+    assert.equal(win.value.id, 101)
+
+    // Test get_window_state
+    const state = await sidecar.request('call', {
+      name: 'get_window_state',
+      arguments: { window: { id: 101, app: 'org.gnome.TextEditor' } },
+    })
+    assert.equal(state.ok, true)
+    assert.equal(state.images.length, 1)
+    assert.ok(state.value.accessibility?.tree.includes('TextEditor'))
+    assert.equal(state.value.screenshots.length, 1)
+
+    // Test drag (which is rejected on linux 7-tool surface, but allowed on window2)
+    const drag = await sidecar.request('call', {
+      name: 'drag',
+      arguments: {
+        window: { id: 101, app: 'org.gnome.TextEditor' },
+        from_x: 10,
+        from_y: 20,
+        to_x: 100,
+        to_y: 200,
+      },
+    })
+    assert.equal(drag.ok, true)
+    assert.equal(drag.value.action, 'drag')
+
+    // Test set_value
+    const setValue = await sidecar.request('call', {
+      name: 'set_value',
+      arguments: {
+        window: { id: 101, app: 'org.gnome.TextEditor' },
+        element_index: 1,
+        value: 'hello window2',
+      },
+    })
+    assert.equal(setValue.ok, true)
+    assert.equal(setValue.value.action, 'set_value')
+    assert.equal(setValue.value.value, 'hello window2')
+
+    // Test perform_secondary_action
+    const sec = await sidecar.request('call', {
+      name: 'perform_secondary_action',
+      arguments: {
+        window: { id: 101, app: 'org.gnome.TextEditor' },
+        element_index: 1,
+        action: 'Raise',
+      },
+    })
+    assert.equal(sec.ok, true)
+    assert.equal(sec.value.action, 'Raise')
+
+    // Test activate_window
+    const act = await sidecar.request('call', {
+      name: 'activate_window',
+      arguments: { window: { id: 101, app: 'org.gnome.TextEditor' } },
+    })
+    assert.equal(act.ok, true)
+    assert.equal(act.value.action, 'activate_window')
+  } finally {
+    await sidecar.request('shutdown').catch(() => {})
+    sidecar.dispose()
+    if (origEnv !== undefined) process.env.DSH_COMPUTER_USE_HELPER = origEnv
+    else delete process.env.DSH_COMPUTER_USE_HELPER
+  }
+})
+
+test('P2-SIDECAR-ALL-SURFACE surface=all merges native window2 with python browser tools under backend=linux', async () => {
+  const sidecarWindow2 = new Sidecar({
+    backend: 'linux',
+    surface: 'computer',
+    engineRoot: pluginRoot,
+  })
+
+  let nativeRequestedSurface = null
+  let pythonRequestedSurface = null
+
+  sidecarWindow2.primary = {
+    alive: true,
+    rawRequest: async (method, payload) => {
+      if (method === 'tools') {
+        nativeRequestedSurface = payload.surface
+        return {
+          tools: EXPECTED_WINDOW2_TOOLS.map(name => ({ name })),
+          surface: payload.surface,
+        }
+      }
+      return { ok: true }
+    },
+  }
+
+  sidecarWindow2.ensurePython = async () => ({
+    rawRequest: async (method, payload) => {
+      if (method === 'tools') {
+        pythonRequestedSurface = payload.surface
+        return {
+          tools: [{ name: 'create_tab' }, { name: 'click' }], // click is duplicate, create_tab is extra
+          surface: payload.surface,
+        }
+      }
+      return { ok: true }
+    },
+  })
+
+  const resAll = await sidecarWindow2.listTools({ surface: 'all' })
+  assert.equal(nativeRequestedSurface, 'computer', 'native helper should receive surface=computer for window2 when surface=all')
+  assert.equal(pythonRequestedSurface, 'all', 'python should receive surface=all')
+  assert.equal(resAll.surface, 'all')
+  const names = resAll.tools.map(t => t.name)
+  for (const exp of EXPECTED_WINDOW2_TOOLS) {
+    assert.ok(names.includes(exp), 'missing ' + exp)
+  }
+  assert.ok(names.includes('create_tab'), 'merged list must include create_tab from python')
+  assert.equal(names.filter(n => n === 'click').length, 1, 'duplicate tools like click must be deduplicated')
+
+  // Test P1 backward compatibility: when surface was configured as 'linux', surface='all' passes nativeSurface='linux'
+  const sidecarP1 = new Sidecar({
+    backend: 'linux',
+    surface: 'linux',
+    engineRoot: pluginRoot,
+  })
+
+  let p1NativeRequested = null
+  sidecarP1.primary = {
+    alive: true,
+    rawRequest: async (method, payload) => {
+      if (method === 'tools') {
+        p1NativeRequested = payload.surface
+        return {
+          tools: EXPECTED_7_TOOLS.map(name => ({ name })),
+          surface: payload.surface,
+        }
+      }
+      return { ok: true }
+    },
+  }
+  sidecarP1.ensurePython = async () => ({
+    rawRequest: async () => ({ tools: [{ name: 'create_tab' }] }),
+  })
+
+  const resP1All = await sidecarP1.listTools({ surface: 'all' })
+  assert.equal(p1NativeRequested, 'linux', 'native helper should receive surface=linux for P1 when surface=all')
+  assert.ok(resP1All.tools.map(t => t.name).includes('create_tab'))
+})
+
+

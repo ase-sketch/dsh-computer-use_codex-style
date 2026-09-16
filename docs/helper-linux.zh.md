@@ -76,3 +76,22 @@ P1 阶段 `helper-linux` 对外暴露 7 个核心工具：
   - 若系统未开启 AT-SPI 或目标应用不支持无障碍协议，`get_app_state` 中的 `text` 为空，但截图依然正常生成。Agent 应平滑降级为根据视觉截图执行坐标点击。
 - **Portal 权限拒绝处理**：
   - 用户拒绝 Portal 授权时，helper 快速失败并返回明晰错误信息，避免静默卡死。
+
+## 6. P2 进展：window2 全表面支持（X11 Parity）
+
+P2 阶段将 `helper-linux` 从 P1 的 7 工具 sky.window 子集扩展至与 Windows 对齐的 **13 工具 window2 全表面**（Codex Parity）。
+
+### P2 核心能力
+1. **13 工具完整表面**：全面覆盖 `list_windows`、`get_window`、`list_apps`、`launch_app`、`get_window_state`、`click`、`press_key`、`type_text`、`scroll`、`set_value`、`drag`、`perform_secondary_action`、`activate_window`。
+2. **纯 Rust x11rb 路线**：全部基于纯 Rust `x11rb-protocol` Wire 协议扩展（XTest、XShm、XFixes、XInput2），无需宿主机安装 C 语言 X11 开发包（如 `libxcb-dev`）。
+3. **结构化 Window 对象定位**：全面对齐 Windows 的 `Window { id, app, title }` 句柄体系，基于 EWMH 实现稳定窗口枚举与再水化。
+4. **AT-SPI 元素索引支持**：提取结构化无障碍控件树，提供基于 1-based 序号的元素定位（`element_index`），支持元素级点击、`set_value` 赋值及次级操作。
+5. **体验与安全保障层**：
+   - 基于 Override-Redirect 窗口的自动化操作药丸提示（Overlay Pill）；
+   - 基于 XFixes 的原生光标隐藏与合成光标跟随绘制；
+   - 基于 XInput2 原始事件的新鲜度租约检测（防止并发冲突）；
+   - 基于 X11 全局 keygrab 的物理 `Escape` 按键即时中断。
+6. **分级显示服务架构**：
+   - **X11 完整模式**：提供 13 方法全部能力，支持 MIT-SHM 遮挡窗口抓取、药丸遮罩、合成光标及全局 Esc 捕获；
+   - **Wayland 降级模式**：降级为基于 XDG Desktop Portal 与 AT-SPI 运行，药丸与全局快捷键平滑退避，通过 `computer_use_health` 透明上报降级状态。
+

@@ -19,6 +19,7 @@ need the topic they cover:
   recovery guidance. You MUST read this before controlling Windows apps.
 - `references/api.md`: the Windows window2 13-tool surface with every parameter, default, and doc comment.
 - `references/api-linux.md`: the Linux P1 sky.window 7-tool surface (`list_apps`, `get_app_state`, `screenshot`, `click`, `scroll`, `press_key`, `type_text`) with string-based `app` and `linux-window:<id>` targeting.
+- `references/api-linux-window2.md`: the Linux P2 window2 13-tool surface (Codex parity on X11, complete 13 methods, element indexing, overlay pill, synthetic cursor, and Wayland degradation mode).
 - `references/confirmations.md`: you MUST read this before deciding whether a Windows UI action needs
   confirmation.
 - `references/dsh-header.md`: the session contract and the non-negotiable Windows Automation Safety block

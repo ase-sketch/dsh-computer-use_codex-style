@@ -356,6 +356,22 @@ export const LINUX_CALLS = new Set([
   'type_text',
 ])
 
+export const WINDOW2_CALLS = new Set([
+  'list_windows',
+  'get_window',
+  'list_apps',
+  'launch_app',
+  'get_window_state',
+  'click',
+  'press_key',
+  'type_text',
+  'scroll',
+  'set_value',
+  'drag',
+  'perform_secondary_action',
+  'activate_window',
+])
+
 export function pythonCatalog(surface) {
   const name = String(surface || '')
   if (name === 'browser' || name === 'all') return true
@@ -369,7 +385,7 @@ export function usesPython(method, params = {}, backend) {
   if (method !== 'call') return false
   const name = String(params.name || '')
   if (!name) return false
-  if (backend === 'linux' && LINUX_CALLS.has(name)) return false
+  if (backend === 'linux' && (LINUX_CALLS.has(name) || WINDOW2_CALLS.has(name))) return false
   if (name === 'batch_actions') {
     const actions = params.arguments && Array.isArray(params.arguments.actions) ? params.arguments.actions : []
     if (actions.some(item => item && item.name && !NATIVE_CALLS.has(String(item.name)))) return true
@@ -731,7 +747,9 @@ export class Sidecar {
       return (await this.ensurePython()).rawRequest('tools', payload, signal, timeoutMs)
     }
     const nativeSurface = surface === 'all'
-      ? (this.config.backend === 'linux' ? 'linux' : 'desktop')
+      ? (this.config.backend === 'linux'
+          ? (this.config.surface === 'linux' ? 'linux' : 'computer')
+          : 'desktop')
       : surface
     const native = await this.primary.rawRequest('tools', { ...payload, surface: nativeSurface }, signal, timeoutMs)
     if (surface !== 'all' && native?.deferred !== 'python') return native
