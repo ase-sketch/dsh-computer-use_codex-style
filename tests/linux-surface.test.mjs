@@ -9,10 +9,29 @@ import { Context } from '@deepseek-ai/cordis'
 import ComputerUseService, { Config as HostConfig } from '../src/index.js'
 import { Config as ToolConfig, apply as applyTools } from '../src/tool.js'
 import { nativeHelperCandidates } from '../src/paths.js'
-import { Sidecar, usesPython, pythonCatalog, LINUX_CALLS, WINDOW2_CALLS, callParamsFor, isWindow2Surface } from '../src/sidecar.js'
+import {
+  Sidecar,
+  usesPython,
+  engineFor,
+  pythonCatalog,
+  pythonSurfaceFor,
+  browserChannelMode,
+  PYTHON_SURFACES,
+  LINUX_CALLS,
+  WINDOW2_CALLS,
+  callParamsFor,
+  isWindow2Surface,
+} from '../src/sidecar.js'
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const stubHelper = path.join(pluginRoot, 'scripts', 'stub-linux-helper.mjs')
+/**
+ * Test double for the Python engine. The real one is a Python process whose browser
+ * surface needs Chromium/CDP; the double speaks the same JSONL protocol and records the
+ * argv it was spawned with, which is what proves the browser channel was opened with
+ * `--surface browser` and not with the native face.
+ */
+const stubPython = path.join(pluginRoot, 'scripts', 'stub-python-engine.sh')
 
 const EXPECTED_7_TOOLS = [
   'list_apps',
@@ -754,4 +773,309 @@ rl.on('line', line => {
     else delete process.env.DSH_COMPUTER_USE_MAX_IMAGE_EDGE
     fs.rmSync(stub, { force: true })
   }
+})
+
+// ---------------------------------------------------------------------------
+// P3: the browser-only Python channel on Linux.
+//
+// The Linux native helper serves the desktop faces and no browser catalog: the `tab_*`
+// tools and the ExtensionHub bridge (127.0.0.1:8765) live in the Python engine, so a
+// healthy native helper is only half the job. These cases pin the second channel, the
+// spawn argv that opens it, the routing that feeds it, and -- just as important -- the
+// paths that must NOT open it (Windows, fake, opt-out).
+// ---------------------------------------------------------------------------
+
+test('P3-ROUTING engineFor is the single routing decision point', () => {
+  // `usesPython` must stay a thin wrapper so every existing caller keeps its semantics.
+  assert.equal(usesPython('tools', { surface: 'browser' }), true)
+  assert.equal(usesPython('tools', { surface: 'computer' }), false)
+  assert.equal(usesPython('call', { name: 'create_tab' }, 'linux'), true)
+  assert.equal(usesPython('call', { name: 'click' }, 'linux'), false)
+
+  // Table-driven: the routing surface as a whole, not one name at a time.
+  const table = [
+    ['tools', { surface: 'computer' }, 'linux', 'native'],
+    ['tools', { surface: 'linux' }, 'linux', 'native'],
+    ['tools', { surface: 'browser' }, 'linux', 'python'],
+    ['tools', { surface: 'all' }, 'linux', 'python'],
+    ['tools', { surface: 'desktop' }, 'linux', 'native'],
+    ['health', {}, 'linux', 'native'],
+    ['prompt', {}, 'linux', 'native'],
+    ['call', { name: 'create_tab' }, 'linux', 'python'],
+    ['call', { name: 'tab_list' }, 'linux', 'python'],
+    ['call', { name: 'browser_setup' }, 'linux', 'python'],
+    // The two native faces own the shared names on Linux.
+    ['call', { name: 'click' }, 'linux', 'native'],
+    ['call', { name: 'list_apps' }, 'linux', 'native'],
+    ['call', { name: 'drag' }, 'linux', 'native'],
+    ['call', { name: 'list_windows' }, 'linux', 'native'],
+    // Unknown names are Python's (the browser catalog is the open set).
+    ['call', { name: 'tab_new' }, 'linux', 'python'],
+    // batch_actions follows its members.
+    ['call', { name: 'batch_actions', arguments: { actions: [{ name: 'click' }, { name: 'set_value' }] } }, 'linux', 'native'],
+    ['call', { name: 'batch_actions', arguments: { actions: [{ name: 'tab_new' }] } }, 'linux', 'python'],
+  ]
+  for (const [method, params, backend, expected] of table) {
+    assert.equal(
+      engineFor(method, params, backend),
+      expected,
+      method + ' ' + JSON.stringify(params) + ' must route to ' + expected,
+    )
+    assert.equal(usesPython(method, params, backend), expected === 'python', 'usesPython must agree with engineFor')
+  }
+})
+
+test('P3-PYTHON-SURFACE the engine is never spawned with a surface argparse rejects', () => {
+  // computer_use/cli.py:18 accepts exactly these; `linux` is the native P1 face, not a
+  // Python catalog, and passing it made argparse exit 2 -- the root cause of the dead
+  // browser channel on Linux.
+  assert.deepEqual([...PYTHON_SURFACES].sort(), ['all', 'browser', 'computer', 'desktop', 'gated', 'mac'])
+  assert.equal(PYTHON_SURFACES.has('linux'), false)
+
+  // Linux: the native faces become `browser`, the one catalog the native helper lacks.
+  assert.equal(pythonSurfaceFor({ backend: 'linux', surface: 'computer' }), 'browser')
+  assert.equal(pythonSurfaceFor({ backend: 'linux', surface: 'linux' }), 'browser')
+  assert.equal(pythonSurfaceFor({ backend: 'linux', surface: 'sky.window' }), 'browser')
+  assert.equal(pythonSurfaceFor({ backend: 'linux', surface: 'all' }), 'browser')
+  assert.equal(pythonSurfaceFor({ backend: 'linux', surface: 'browser' }), 'browser')
+  assert.equal(pythonSurfaceFor({ backend: 'linux', surface: 'mac' }), 'browser')
+  assert.equal(pythonSurfaceFor({ backend: 'linux' }), 'browser')
+
+  // On Linux every configured surface must resolve to one the engine's parser accepts:
+  // that is the bug this function exists to fix.
+  for (const surface of ['computer', 'linux', 'sky.window', 'all', 'browser', 'mac', 'desktop', 'gated', '']) {
+    const resolved = pythonSurfaceFor({ backend: 'linux', surface })
+    assert.equal(resolved, 'browser', 'linux surface=' + (surface || '(unset)') + ' must resolve to browser')
+    assert.ok(PYTHON_SURFACES.has(resolved), 'and that value must be one argparse accepts')
+  }
+
+  // Windows/fake are the original primary paths: the configured value travels verbatim,
+  // exactly as it did before this function existed -- including a value the engine would
+  // refuse. Changing that is out of scope here and would alter working Windows behaviour.
+  assert.equal(pythonSurfaceFor({ backend: 'windows', surface: 'computer' }), 'computer')
+  assert.equal(pythonSurfaceFor({ backend: 'windows', surface: 'desktop' }), 'desktop')
+  assert.equal(pythonSurfaceFor({ backend: 'windows', surface: 'all' }), 'all')
+  assert.equal(pythonSurfaceFor({ backend: 'windows', surface: 'linux' }), 'linux', 'Windows passthrough is untouched')
+  assert.equal(pythonSurfaceFor({ backend: 'windows' }), 'computer')
+  assert.equal(pythonSurfaceFor({ backend: 'fake', surface: 'computer' }), 'computer')
+  assert.equal(pythonSurfaceFor({ backend: 'helper', surface: 'gated' }), 'gated')
+})
+
+test('P3-CHANNEL-MODE auto opens the channel on Linux only, and never twice on Windows', () => {
+  // Linux + a surface that needs browser tools -> eager.
+  for (const surface of ['computer', 'browser', 'all']) {
+    assert.equal(browserChannelMode({ backend: 'linux', surface }), 'eager', 'linux/' + surface + ' must open the channel')
+  }
+  // P1's native face keeps its lazy path.
+  for (const surface of ['linux', 'sky.window', 'desktop', 'mac']) {
+    assert.equal(browserChannelMode({ backend: 'linux', surface }), 'disabled', 'linux/' + surface + ' must stay lazy')
+  }
+  // Windows: the Python engine is already the (lazy) primary -- a second start is the bug
+  // this whole guard exists for.
+  for (const surface of ['computer', 'desktop', 'browser', 'all', '']) {
+    assert.equal(browserChannelMode({ backend: 'windows', surface }), 'disabled', 'windows/' + surface + ' must not double-start')
+  }
+  assert.equal(browserChannelMode({ backend: 'live', surface: 'computer' }), 'disabled')
+  assert.equal(browserChannelMode({ backend: 'helper', surface: 'computer' }), 'disabled')
+  // fake runs Python as the primary, so there is no second channel to open.
+  assert.equal(browserChannelMode({ backend: 'fake', surface: 'computer' }), 'disabled')
+
+  // Explicit opt-out, and an explicit opt-in that still refuses the two unsafe cases.
+  assert.equal(browserChannelMode({ backend: 'linux', surface: 'computer', browserChannel: 'off' }), 'disabled')
+  assert.equal(browserChannelMode({ backend: 'linux', surface: 'linux', browserChannel: 'on' }), 'eager')
+  assert.equal(browserChannelMode({ backend: 'windows', surface: 'computer', browserChannel: 'on' }), 'disabled')
+  assert.equal(browserChannelMode({ backend: 'fake', surface: 'computer', browserChannel: 'on' }), 'disabled')
+})
+
+/** Run `body` with the stub helper + stub Python engine wired into the environment. */
+async function withStubEngines(body) {
+  const record = path.join(os.tmpdir(), 'dsh-stub-python-' + process.pid + '-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.jsonl')
+  const saved = {
+    helper: process.env.DSH_COMPUTER_USE_HELPER,
+    python: process.env.PYTHON,
+    record: process.env.DSH_STUB_PYTHON_RECORD,
+    crash: process.env.DSH_STUB_PYTHON_CRASH,
+  }
+  process.env.DSH_COMPUTER_USE_HELPER = stubHelper
+  process.env.PYTHON = stubPython
+  process.env.DSH_STUB_PYTHON_RECORD = record
+  delete process.env.DSH_STUB_PYTHON_CRASH
+  const readSpawns = () =>
+    fs.existsSync(record)
+      ? fs.readFileSync(record, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+      : []
+  try {
+    return await body({ record, readSpawns })
+  } finally {
+    for (const [key, name] of [
+      ['helper', 'DSH_COMPUTER_USE_HELPER'],
+      ['python', 'PYTHON'],
+      ['record', 'DSH_STUB_PYTHON_RECORD'],
+      ['crash', 'DSH_STUB_PYTHON_CRASH'],
+    ]) {
+      if (saved[key] !== undefined) process.env[name] = saved[key]
+      else delete process.env[name]
+    }
+    try {
+      fs.unlinkSync(record)
+    } catch {
+      // nothing recorded
+    }
+  }
+}
+
+test('P3-DUAL-CHANNEL start() opens the browser channel next to the native helper', async () => {
+  await withStubEngines(async ({ readSpawns }) => {
+    const sidecar = new Sidecar({ backend: 'linux', surface: 'computer', engineRoot: pluginRoot })
+    try {
+      await sidecar.start()
+
+      // (1) The native helper is the desktop engine and stayed first.
+      assert.equal(sidecar.primary.kind, 'native', 'the native helper must remain the desktop engine')
+
+      // (2) The browser-only Python channel exists, is alive, and reports where it lives.
+      assert.ok(sidecar.python.alive, 'the Python browser channel must be running after start()')
+      assert.equal(sidecar.python.kind, 'python')
+      assert.equal(sidecar.pythonChannel.state, 'started')
+      assert.equal(sidecar.pythonChannel.surface, 'browser')
+      assert.equal(
+        sidecar.pythonChannel.endpoint,
+        'http://127.0.0.1:8765',
+        'the channel must report the ExtensionHub endpoint the extension polls',
+      )
+      assert.ok(sidecar.pythonChannel.pid > 0, 'the channel must report the engine pid')
+
+      // (3) Evidence: the engine was really spawned, with an argv argparse accepts.
+      const spawns = readSpawns()
+      assert.ok(spawns.length >= 1, 'the Python engine must have been spawned')
+      const argv = spawns[0].argv
+      const surfaceIndex = argv.indexOf('--surface')
+      assert.ok(surfaceIndex >= 0, 'the spawn must carry --surface')
+      assert.equal(argv[surfaceIndex + 1], 'browser', 'the browser channel must be spawned as the browser surface')
+      assert.deepEqual(argv.slice(-1), ['serve'], 'the spawn must end with the serve subcommand')
+      const backendIndex = argv.indexOf('--backend')
+      assert.equal(argv[backendIndex + 1], 'linux', 'the engine must be told the configured backend')
+
+      // (4) Routing: browser calls reach the Python channel, desktop calls the native helper.
+      const tabs = await sidecar.request('call', { name: 'tab_list', arguments: {} })
+      assert.equal(tabs.ok, true)
+      assert.equal(tabs.value.servedBy, 'python-stub', 'tab_list must be served by the Python engine')
+
+      // window2 shape, because this sidecar is configured with surface=computer, which
+      // callParamsFor tags as a window2 turn (P2 behavior, unchanged).
+      const click = await sidecar.request('call', {
+        name: 'click',
+        arguments: { window: { id: 101, app: 'org.gnome.TextEditor' }, element_index: 2 },
+      })
+      assert.equal(click.ok, true, 'a desktop call must still answer')
+      assert.equal(click.value?.handler, 'window2', 'the desktop call must reach the native window2 handler')
+      assert.notEqual(click.value?.servedBy, 'python-stub', 'click must NOT be served by the Python engine')
+
+      // (5) The browser catalog comes from Python; the desktop catalog from native.
+      const browser = await sidecar.request('tools', { surface: 'browser' })
+      const browserNames = browser.tools.map(tool => tool.name)
+      assert.ok(browserNames.includes('create_tab'), 'the browser catalog must come from the Python engine')
+      // The desktop catalog still comes from the native helper: this sidecar is configured
+      // surface=computer, so it is the window2 13-method face, with no browser tool in it.
+      const desktop = await sidecar.request('tools')
+      assert.deepEqual(
+        desktop.tools.map(tool => tool.name).sort(),
+        [...EXPECTED_WINDOW2_TOOLS].sort(),
+        'the desktop catalog must be served by the native helper',
+      )
+
+      // (6) shutdown reaches both engines, not just one.
+      await sidecar.request('shutdown')
+    } finally {
+      sidecar.dispose()
+    }
+  })
+})
+
+test('P3-DUAL-CHANNEL-WINDOWS start() must not double-start the Python engine on Windows', async () => {
+  await withStubEngines(async ({ readSpawns }) => {
+    const sidecar = new Sidecar({ backend: 'windows', surface: 'computer', engineRoot: pluginRoot })
+    try {
+      await sidecar.start()
+      assert.equal(sidecar.pythonChannel.state, 'disabled', 'Windows must not open a second Python channel')
+      assert.equal(sidecar.python.alive, false, 'no Python child may be alive on a Windows start')
+      assert.equal(readSpawns().length, 0, 'no Python engine may be spawned on a Windows start')
+    } finally {
+      sidecar.dispose()
+    }
+  })
+})
+
+test('P3-CHANNEL-FAILURE a Python that cannot start is reported, not fatal', async () => {
+  await withStubEngines(async () => {
+    // Every interpreter candidate must fail, or `ensurePython` correctly falls through to
+    // the next one and the channel legitimately comes up -- which would test nothing. A
+    // PATH shim shadowing `python` and `python3` makes all three candidates (PYTHON, the
+    // stub, plus the two generic names) die the way a broken engine does: spawned, then
+    // exiting before `health` is answered.
+    const shim = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-broken-python-'))
+    for (const name of ['python', 'python3']) {
+      fs.writeFileSync(path.join(shim, name), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+    }
+    const savedPath = process.env.PATH
+    process.env.PATH = shim + path.delimiter + (savedPath || '')
+    // PYTHON is the first candidate `pythonCandidates` tries, so the (working) stub has to
+    // be replaced too -- otherwise the channel legitimately comes up through it.
+    process.env.PYTHON = path.join(shim, 'python')
+    const sidecar = new Sidecar({
+      backend: 'linux',
+      surface: 'computer',
+      engineRoot: pluginRoot,
+      startupTimeoutMs: 3000,
+    })
+    try {
+      // start() must still succeed: the desktop faces are healthy and the operator keeps
+      // working; the broken browser channel is reported instead of taking the session down.
+      await sidecar.start()
+      assert.equal(sidecar.primary.kind, 'native', 'the native helper must still be the desktop engine')
+      assert.equal(sidecar.pythonChannel.state, 'failed')
+      assert.ok(sidecar.pythonChannel.error, 'a failure must carry its reason')
+    } finally {
+      sidecar.dispose()
+      if (savedPath !== undefined) process.env.PATH = savedPath
+      else delete process.env.PATH
+      fs.rmSync(shim, { recursive: true, force: true })
+    }
+  })
+})
+
+test('P3-CHANNEL-OFF browserChannel=off restores the previous single-engine behaviour', async () => {
+  await withStubEngines(async ({ readSpawns }) => {
+    const sidecar = new Sidecar({
+      backend: 'linux',
+      surface: 'computer',
+      engineRoot: pluginRoot,
+      browserChannel: 'off',
+    })
+    try {
+      await sidecar.start()
+      assert.equal(sidecar.pythonChannel.state, 'disabled')
+      assert.equal(readSpawns().length, 0, 'browserChannel=off must not spawn the engine')
+      // The lazy path is untouched: a browser call still brings the engine up on demand.
+      const browser = await sidecar.request('tools', { surface: 'browser' })
+      assert.ok(browser.tools.map(tool => tool.name).includes('create_tab'))
+      assert.equal(readSpawns().length, 1, 'the lazy ensurePython path must still work')
+    } finally {
+      sidecar.dispose()
+    }
+  })
+})
+
+test('P3-FAKE-PRIMARY a fake backend keeps Python as the primary and opens no second channel', async () => {
+  await withStubEngines(async ({ readSpawns }) => {
+    const sidecar = new Sidecar({ backend: 'fake', surface: 'computer', engineRoot: pluginRoot })
+    try {
+      await sidecar.start()
+      assert.equal(sidecar.primary.kind, 'python', 'fake must run Python as its primary')
+      assert.equal(sidecar.pythonChannel.state, 'primary')
+      assert.equal(readSpawns().length, 1, 'fake must spawn the engine exactly once, never twice')
+    } finally {
+      sidecar.dispose()
+    }
+  })
 })

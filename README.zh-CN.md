@@ -367,7 +367,14 @@ pwsh -File scripts/ship-helper.ps1
 
 # Python 引擎（可选浏览器面）
 python -m pip install -e .
+
+# 可选：Python 引擎里的 CDP 直连（WebSocket）路径
+python -m pip install --user websocket-client   # 或：apt install python3-websocket-client
 ```
+
+Chrome/Edge **扩展**通道不需要任何第三方 Python 包：引擎会在 `127.0.0.1:8765` 上绑定
+ExtensionHub，扩展轮询它即可。只有 CDP 直连路径（`--remote-debugging-port` + WebSocket）
+需要 `websocket-client`；缺它时引擎照常启动，仅在真正执行 CDP 操作时报出明确错误。
 
 `scripts/ship-helper.ps1` 会跑 `cargo build --release`、helper 测试套件，把 `dsh-computer-use.exe` 复制到 `helper-rs/bin/<platform>-<arch>/` 并打印 SHA-256。因为该二进制已被跟踪，全新 checkout 无需 Rust 工具链也能直接运行。
 

@@ -99,6 +99,22 @@ export const Config = Schema.object({
    * `gated` fallback used to hand the model the whole 18-row table (TC-01).
    */
   surface: Schema.string().default('computer'),
+  /**
+   * DSH-only switch for the browser-only Python channel on Linux (`auto` by default).
+   *
+   * The Linux native helper serves the desktop faces and no browser catalog at all; the
+   * `tab_*` tools and the ExtensionHub bridge (127.0.0.1:8765) live in the Python engine.
+   * `auto` opens that second channel next to a healthy native helper when the configured
+   * surface actually needs it (`computer`/`browser`/`all`). `off` restores the previous
+   * behaviour (Python only on demand). Windows is never affected: there the Python engine
+   * is the primary and must not be started twice.
+   */
+  browserChannel: Schema.string().default('auto'),
+  /**
+   * DSH-only override for the ExtensionHub port the Python engine binds
+   * (browser_api.py reads COMPUTER_USE_EXTENSION_PORT). Empty keeps the engine default 8765.
+   */
+  extensionPort: Schema.number().default(0),
   stealFocus: Schema.boolean().default(true),
   /**
    * DSH-only screenshot downscale cap, NOT an official field: the official
@@ -226,6 +242,8 @@ export default class ComputerUseService extends Service {
       envAllowlist: [],
       preserveHelperOnTimeout: false,
       allowedApps: [],
+      browserChannel: 'auto',
+      extensionPort: 0,
       serverInstructions:
         'UI automation through the DeepSeek Harness Computer Use tools using the initialized session. Codex is not required.',
       ...config,
@@ -348,6 +366,10 @@ export default class ComputerUseService extends Service {
       // MCP-08/MCP-11: names only, so the allowlist itself is auditable.
       env: this.sidecar.envReport,
       envAllowlist: BASE_ENV_ALLOWLIST,
+      // DSH extension, not official: the browser-only Python channel next to the Linux
+      // native helper (state/surface/endpoint/error). `disabled` and `primary` are honest
+      // states, not failures.
+      pythonChannel: this.sidecar.pythonChannel,
       // MCP-12/SKILL-01: the on-demand documentation channel.
       promptAssets: promptAssetStatus(),
       documentation: documentationSummary(),
