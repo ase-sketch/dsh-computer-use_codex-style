@@ -21,6 +21,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+mod common;
+mod support;
+
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
     ConnectionExt as _, CreateGCAux, CreateWindowAux, EventMask, Rectangle, WindowClass,
@@ -136,11 +139,24 @@ struct Fixture {
     server: Xvfb,
     connection: RustConnection,
     window: u32,
+    /// A private `XDG_CONFIG_HOME`, held for the fixture's whole life.
+    ///
+    /// This suite runs raw X clients rather than a toolkit app and asserts no accessibility
+    /// behaviour, so nothing here should ever talk to an accessibility bus. The `launch_app`
+    /// tests do start real desktop applications though, and an app that finds no session bus
+    /// falls back to `$XDG_RUNTIME_DIR/at-spi/bus_0` over the X11 properties -- the desktop's
+    /// socket. Moving the per-user D-Bus service directory aside keeps that fallback from
+    /// finding a bus, so the suite cannot reach the desktop's accessibility stack by accident.
+    _config: common::PrivateConfig,
 }
 
 fn fixture(display_number: u32) -> Option<Fixture> {
     let guard = DISPLAY_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    // Before anything touches the environment: this is the last moment the desktop's own
+    // XDG_RUNTIME_DIR can be read.
+    common::pin_desktop_a11y_socket();
     let server = Xvfb::start(display_number)?;
+    let config = common::PrivateConfig::new("window2")?;
     let connection = connect(&server.display);
     let screen = &connection.setup().roots[0];
     let window = connection.generate_id().ok()?;
@@ -199,10 +215,16 @@ fn fixture(display_number: u32) -> Option<Fixture> {
         server,
         connection,
         window,
+        _config: config,
     })
 }
 
 impl Fixture {
+    /// The fixture's private `XDG_CONFIG_HOME`.
+    fn private_config_root(&self) -> &std::path::Path {
+        self._config.root()
+    }
+
     /// Paint the client area the way a toolkit does: after mapping, on the exposure.
     ///
     /// Drawing before `map_window` would be erased by the background repaint the map
@@ -257,17 +279,38 @@ impl Fixture {
     }
 }
 
+/// The safety gate this suite ends with when a test drove the live desktop.
+///
+/// This suite is hermetic -- a private Xvfb, no accessibility bus -- but the helper answers
+/// `list_windows` by enumerating the **live** desktop when it is asked to, and it reports the
+/// desktop's accessibility availability alongside it. That is a read of the operator's session,
+/// so the session must still be intact afterwards.
+fn assert_desktop_intact() {
+    let mut safety = support::DesktopSafety::warning("xvfb_window2");
+    safety.observe_env();
+    safety.assert_intact();
+}
+
 /// Run a closure with `DISPLAY` pointing at the fixture's server.
 ///
 /// The helper caches its connection per display, so setting and restoring the variable is
-/// exactly how a session switch is simulated.
+/// exactly how a session switch is simulated. The fixture's private `XDG_CONFIG_HOME` is part
+/// of the same window, so a helper call that would look for a session bus finds nothing
+/// instead of the operator's.
 fn with_display<T>(fixture: &Fixture, f: impl FnOnce() -> T) -> T {
-    let previous = std::env::var("DISPLAY").ok();
+    let previous_display = std::env::var("DISPLAY").ok();
+    let previous_config = std::env::var("XDG_CONFIG_HOME").ok();
     std::env::set_var("DISPLAY", &fixture.server.display);
+    std::env::set_var("XDG_CONFIG_HOME", fixture.private_config_root());
     let result = f();
-    match previous {
-        Some(value) => std::env::set_var("DISPLAY", value),
-        None => std::env::remove_var("DISPLAY"),
+    for (key, value) in [
+        ("DISPLAY", previous_display),
+        ("XDG_CONFIG_HOME", previous_config),
+    ] {
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
     }
     result
 }
@@ -325,6 +368,9 @@ fn enumeration_finds_the_window_and_reports_a_stable_handle() {
     .expect("get_window must rehydrate the handle");
     assert_eq!(rehydrated.id, u64::from(fixture.window));
     assert_eq!(rehydrated.wm_class.as_deref(), Some("Fixture"));
+    // Enumeration is answered from the live desktop, so this is the one test here that reads
+    // the operator's session: prove it is still whole.
+    assert_desktop_intact();
 }
 
 #[test]
@@ -766,6 +812,9 @@ fn the_window2_surface_answers_its_methods_over_a_live_x_server() {
         parsed["screenshots"][0]["method"],
         serde_json::json!("composite")
     );
+    // list_windows is answered from the live desktop, so this is the one test in the suite
+    // that reads the operator's session: prove it is still whole.
+    assert_desktop_intact();
 }
 
 /// The failure mode a real session actually hits: something else already owns the

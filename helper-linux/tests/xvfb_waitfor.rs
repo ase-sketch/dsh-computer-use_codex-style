@@ -17,10 +17,12 @@
 //! Each test starts its own Xvfb on a private display and its own private session bus, and
 //! sets the child's environment itself, so the developer's own session is never touched.
 
-use std::io::Write;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+mod common;
+mod support;
 
 use serde_json::{json, Map, Value};
 
@@ -173,65 +175,18 @@ impl Drop for Xvfb {
     }
 }
 
-/// A private session bus, killed on drop.
-///
-/// `<standard_session_servicedirs/>` is what makes the accessibility stack reachable on a
-/// private bus: the toolkit app activates `org.a11y.Bus` from those service files, exactly as
-/// it would on a login session, so nothing here needs a real desktop.
-struct SessionBus {
-    pid: i32,
-    address: String,
-}
-
-impl SessionBus {
-    fn start(tag: &str) -> Option<Self> {
-        let dir = std::env::temp_dir().join(format!("dsh-waitfor-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).ok()?;
-        let config = dir.join("session.conf");
-        let mut file = std::fs::File::create(&config).ok()?;
-        file.write_all(br#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-<busconfig>
-  <type>session</type>
-  <listen>unix:tmpdir=/tmp</listen>
-  <standard_session_servicedirs/>
-  <policy context="default">
-    <allow send_destination="*"/>
-    <allow receive_sender="*"/>
-    <allow own="*"/>
-    <allow user="*"/>
-  </policy>
-</busconfig>
-"#).ok()?;
-        let out = Command::new("dbus-daemon")
-            .arg(format!("--config-file={}", config.display()))
-            .args(["--fork", "--print-address=1", "--print-pid=1"])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let text = String::from_utf8_lossy(&out.stdout);
-        let mut lines = text.lines();
-        let address = lines.next()?.trim().to_string();
-        let pid: i32 = lines.next()?.trim().parse().ok()?;
-        Some(Self { pid, address })
-    }
-}
-
-impl Drop for SessionBus {
-    fn drop(&mut self) {
-        unsafe {
-            libc::kill(self.pid, libc::SIGTERM);
-        }
-    }
-}
-
-
 /// The whole fixture: Xvfb, a private session bus, and the GTK3 app on it.
+///
+/// The session bus comes from `common::PrivateSession`, which is what makes the accessibility
+/// stack private. A hand-rolled bus is not enough: `at-spi-bus-launcher` takes its socket path
+/// from `$XDG_RUNTIME_DIR` -- the environment of the `dbus-daemon` that activates it, not the
+/// environment of this test -- so a private bus started from an inherited runtime directory
+/// puts the private a11y bus on top of the desktop's own socket and unlinks it when the fixture
+/// ends. See `tests/common/mod.rs`.
 struct Fixture {
     _guard: std::sync::MutexGuard<'static, ()>,
     xvfb: Xvfb,
-    bus: SessionBus,
+    bus: common::PrivateSession,
     app: Child,
     trigger: std::path::PathBuf,
     window_id: u64,
@@ -240,25 +195,30 @@ struct Fixture {
 impl Fixture {
     fn start(tag: &str) -> Option<Self> {
         let guard = DISPLAY_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        // Before anything touches the environment: this is the last moment the desktop's own
+        // XDG_RUNTIME_DIR can be read.
+        common::pin_desktop_a11y_socket();
         let xvfb = Xvfb::start()?;
-        let bus = SessionBus::start(tag)?;
+        // Started before the lock-free helper calls below, and installed in this process as
+        // well, because the dispatcher reads DISPLAY and the bus address from the environment.
+        let mut bus = common::PrivateSession::start()?;
+        bus.install_env();
 
         let trigger = std::env::temp_dir()
             .join(format!("dsh-waitfor-trigger-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_file(&trigger);
 
-        let app = Command::new("python3")
+        let mut command = Command::new("python3");
+        command
             .arg(fixture_script())
             .arg(&trigger)
             .env("DISPLAY", &xvfb.display)
-            .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
-            .env("XDG_SESSION_TYPE", "x11")
-            .env("GTK_MODULES", "gail:atk-bridge")
-            .env("NO_AT_BRIDGE", "0")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
+            .env("GTK_MODULES", "gail:atk-bridge");
+        // The app is a child of this process, so it would inherit the private environment
+        // anyway; pointing it explicitly keeps the fixture correct even if it is ever started
+        // from somewhere else.
+        bus.configure_command(&mut command);
+        let app = command.stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok()?;
 
         let mut fixture = Self {
             _guard: guard,
@@ -278,16 +238,23 @@ impl Fixture {
     /// its connections, so setting and restoring them is exactly how a private session is
     /// simulated -- the technique `xvfb_window2.rs` uses for `DISPLAY`.
     fn with_env<T>(&self, f: impl FnOnce() -> T) -> T {
+        // `XDG_RUNTIME_DIR` is part of the window: the AT-SPI client reads it to locate the
+        // accessibility bus, so presenting the fixture's private value is what keeps the
+        // helper on the fixture's bus rather than the desktop's.
         let previous = [
             ("DISPLAY", std::env::var("DISPLAY").ok()),
             (
                 "DBUS_SESSION_BUS_ADDRESS",
                 std::env::var("DBUS_SESSION_BUS_ADDRESS").ok(),
             ),
+            ("XDG_RUNTIME_DIR", std::env::var("XDG_RUNTIME_DIR").ok()),
+            ("XDG_CONFIG_HOME", std::env::var("XDG_CONFIG_HOME").ok()),
             ("XDG_SESSION_TYPE", std::env::var("XDG_SESSION_TYPE").ok()),
         ];
         std::env::set_var("DISPLAY", &self.xvfb.display);
-        std::env::set_var("DBUS_SESSION_BUS_ADDRESS", &self.bus.address);
+        std::env::set_var("DBUS_SESSION_BUS_ADDRESS", self.bus.address());
+        std::env::set_var("XDG_RUNTIME_DIR", self.bus.root());
+        std::env::set_var("XDG_CONFIG_HOME", self.bus.root().join("conf"));
         std::env::set_var("XDG_SESSION_TYPE", "x11");
         let result = f();
         for (key, value) in previous {
@@ -299,7 +266,64 @@ impl Fixture {
         result
     }
 
-    /// Find the fixture window by polling `list_windows` until the app publishes one.
+    /// The accessibility bus address this fixture resolves to, through the helper's own
+    /// discovery path rather than a reimplementation of it.
+    fn a11y_bus_address(&self) -> Option<String> {
+        self.with_env(|| {
+            let output = Command::new(env!("CARGO_BIN_EXE_a11y-probe"))
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()
+                .ok()?;
+            output
+                .status
+                .success()
+                .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        })
+    }
+
+    /// The safety gate every test in this suite ends with.
+    ///
+    /// Two properties, both of which this suite violated once:
+    ///
+    /// * the desktop's accessibility socket is still there and still accepts connections, and
+    /// * the accessibility bus this fixture resolves to lives in the fixture's **private**
+    ///   runtime directory, not the desktop's.
+    ///
+    /// The second is the direct regression test. The launcher that put its socket at
+    /// /run/user/1000/at-spi/bus_0 was reachable exactly this way, and asserting on the resolved
+    /// address catches it without having to catch a syscall.
+    fn assert_desktop_intact(&self) {
+        let mut safety = support::DesktopSafety::fatal("xvfb_waitfor");
+        if let Some(socket) = safety.socket().map(std::path::Path::to_path_buf) {
+            let address = self
+                .a11y_bus_address()
+                .expect("the helper's AT-SPI discovery must answer while the fixture is alive");
+            let private = self.bus.root().to_path_buf();
+            // Compare the path the address points at, not a substring of the address: a
+            // leftover tree from an earlier fixture has a name that is a prefix of this
+            // one's, and a substring test would accept it.
+            let resolved = address
+                .strip_prefix("unix:path=")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from(&address));
+            assert!(
+                resolved.starts_with(&private),
+                "the fixture resolved its accessibility bus to {address}, which is outside its \
+                 private runtime directory {}; a bus outside it belongs to the desktop",
+                private.display()
+            );
+            assert!(
+                !resolved.starts_with(&socket),
+                "the fixture resolved its accessibility bus to the desktop socket {}",
+                socket.display()
+            );
+        }
+        safety.observe_env();
+        safety.assert_intact();
+    }
+
+    /// Find the fixture window by polling list_windows until the app publishes one.
     fn discover_window(&mut self) -> Option<u64> {
         let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
@@ -503,6 +527,7 @@ fn text_appearing_is_matched_while_the_caller_waits() {
     assert_eq!(hit["role"], json!("label"), "result: {result}");
     assert_eq!(hit["name"], json!(READY), "result: {result}");
     assert!(hit["index"].is_u64(), "the match must carry a usable index: {result}");
+    fixture.assert_desktop_intact();
 }
 
 /// An element name that appears: the second condition kind, on the same live tree.
@@ -534,6 +559,7 @@ fn an_element_name_is_matched_against_the_live_tree() {
         json!({ "element_name": "NoSuchElementAnywhere", "timeout_ms": 1_000 }),
     );
     assert_eq!(absent["matched"], json!(false), "result: {absent}");
+    fixture.assert_desktop_intact();
 }
 
 /// Text that disappears: the `gone` path, including its two-phase presence semantics.
@@ -574,6 +600,7 @@ fn gone_waits_for_text_to_disappear() {
         json!(true),
         "the wait saw it present and then leave: {result}"
     );
+    fixture.assert_desktop_intact();
 }
 
 /// `gone` on something that was never there finishes early, and says which case it was.
@@ -607,6 +634,7 @@ fn gone_on_something_never_present_does_not_wait_out_the_budget() {
         elapsed < Duration::from_secs(6),
         "a never-present gone must finish early, took {elapsed:?}"
     );
+    fixture.assert_desktop_intact();
 }
 
 /// Timeout: the condition never holds, and the call reports that honestly.
@@ -651,6 +679,7 @@ fn a_condition_that_never_holds_times_out_without_erroring() {
             .is_some_and(|note| note.contains("not an error")),
         "a timeout must explain itself: {result}"
     );
+    fixture.assert_desktop_intact();
 }
 
 /// The timeout is clamped to the documented 20 s ceiling, and the clamp is reported.
@@ -679,6 +708,7 @@ fn a_timeout_above_the_ceiling_is_clamped_and_reported() {
     );
     assert_eq!(result["timeoutClamped"], json!(true), "result: {result}");
     assert_eq!(result["maxTimeoutMs"], json!(20_000), "result: {result}");
+    fixture.assert_desktop_intact();
 }
 
 /// The extension is advertised without disturbing the official thirteen.
