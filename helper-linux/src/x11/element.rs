@@ -118,24 +118,7 @@ pub fn resolve(window_id: u64, index: u32) -> Result<AccessibilityNode, ElementI
 /// window's app name is used as a fallback, and a failure to match either is reported
 /// rather than turned into an empty tree that would look like a window with no UI.
 pub async fn snapshot_window(window_id: u64, max_nodes: usize, max_depth: u32) -> Result<ElementSnapshot> {
-    let target = window::get_window(window_id)?;
-    let (nodes, app_name) = if let Some(pid) = target.pid {
-        let nodes = atspi_tree::snapshot_tree(None, Some(pid), max_nodes, max_depth).await?;
-        (nodes, Some(format!("pid {pid}")))
-    } else {
-        let app = target
-            .wm_class
-            .clone()
-            .or_else(|| target.wm_instance.clone())
-            .ok_or_else(|| {
-                anyhow!(
-                    "window 0x{window_id:x} publishes neither _NET_WM_PID nor WM_CLASS, so its \
-                     accessibility tree cannot be located"
-                )
-            })?;
-        let nodes = atspi_tree::snapshot_tree(Some(&app), None, max_nodes, max_depth).await?;
-        (nodes, Some(app))
-    };
+    let (nodes, app_name) = read_tree(window_id, max_nodes, max_depth).await?;
 
     let generation = {
         let mut guard = cache()
@@ -159,6 +142,64 @@ pub async fn snapshot_window(window_id: u64, max_nodes: usize, max_depth: u32) -
         .snapshots
         .insert(window_id, snapshot.clone());
     Ok(snapshot)
+}
+
+/// Read one window's accessibility tree without touching the element cache.
+///
+/// This is the shared half of `snapshot_window`: it resolves the window to an AT-SPI
+/// application, reads the tree, and returns the nodes plus a human-readable source label.
+///
+/// Split out for `wait_for` (see `super::waitfor`). That caller polls the same tree
+/// several times a second, and every one of those reads must stay invisible to the
+/// element-index contract: `resolve` deliberately answers an index against "the tree the
+/// caller most recently received" (`get_window_state`), so a poll that bumped the stored
+/// generation would silently invalidate the indexes the model just read out of a
+/// screenshot -- turning a *wait* into the exact bug the freshness rule exists to prevent.
+/// Keeping the read here and the cache write in `snapshot_window` makes that separation
+/// structural rather than a convention the caller has to remember.
+async fn read_tree(
+    window_id: u64,
+    max_nodes: usize,
+    max_depth: u32,
+) -> Result<(Vec<AccessibilityNode>, Option<String>)> {
+    let target = window::get_window(window_id)?;
+    let (nodes, app_name) = if let Some(pid) = target.pid {
+        let nodes = atspi_tree::snapshot_tree(None, Some(pid), max_nodes, max_depth).await?;
+        (nodes, Some(format!("pid {pid}")))
+    } else {
+        let app = target
+            .wm_class
+            .clone()
+            .or_else(|| target.wm_instance.clone())
+            .ok_or_else(|| {
+                anyhow!(
+                    "window 0x{window_id:x} publishes neither _NET_WM_PID nor WM_CLASS, so its \
+                     accessibility tree cannot be located"
+                )
+            })?;
+        let nodes = atspi_tree::snapshot_tree(Some(&app), None, max_nodes, max_depth).await?;
+        (nodes, Some(app))
+    };
+    Ok((nodes, app_name))
+}
+
+/// One tree read for the blocking `wait_for` poller, with no cache effect.
+///
+/// Returns the same `ElementSnapshot` shape `resolve` hands back, but the generation is
+/// the one already cached (0 when there is none) and nothing is stored: see `read_tree`.
+pub fn snapshot_window_uncached_blocking(
+    window_id: u64,
+    max_nodes: usize,
+    max_depth: u32,
+) -> Result<ElementSnapshot> {
+    let (nodes, app_name) = block_on(read_tree(window_id, max_nodes, max_depth))??;
+    Ok(ElementSnapshot {
+        window_id,
+        generation: current_generation(window_id).unwrap_or(0),
+        nodes,
+        captured_at_ms: now_ms(),
+        app_name,
+    })
 }
 
 /// Where an element sits inside its window, in window-relative coordinates.

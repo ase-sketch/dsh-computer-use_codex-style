@@ -567,7 +567,18 @@ fn surface_guard(id: &Value, name: &str) -> Option<Value> {
 
 /// Whether a `call` name is served by one of the two surfaces.
 fn is_surface_tool(name: &str) -> bool {
-    SURFACE_TOOLS.contains(&name) || crate::x11::window2::WINDOW2_TOOLS.contains(&name)
+    SURFACE_TOOLS.contains(&name) || is_window2_method(name)
+}
+
+/// Whether a name belongs to the window2 face: the official thirteen plus the DSH extensions
+/// that ride the same dispatcher.
+///
+/// `wait_for` is deliberately kept out of `WINDOW2_TOOLS`, which is the official thirteen and
+/// is pinned exactly by a parity test. It still belongs on this face -- it takes a window2
+/// window object and is served by the same native backend -- so the surface predicate is the
+/// one place that knows the difference between "official" and "served here".
+fn is_window2_method(name: &str) -> bool {
+    crate::x11::window2::WINDOW2_TOOLS.contains(&name) || name == crate::x11::waitfor::WAIT_FOR_TOOL
 }
 
 /// Whether this name has to be sent to the native window2 dispatcher.
@@ -584,11 +595,12 @@ fn is_surface_tool(name: &str) -> bool {
 /// while letting a window2 turn address a real window. See `src/sidecar.js`, which is
 /// what tags the request.
 fn is_window2_native_call(name: &str, call_surface: Option<&str>) -> bool {
-    if !crate::x11::window2::WINDOW2_TOOLS.contains(&name) {
+    if !is_window2_method(name) {
         return false;
     }
     if !SURFACE_TOOLS.contains(&name) {
-        // A window2-only name has no P1 handler to fall back to.
+        // A window2-only name -- and a DSH extension like wait_for -- has no P1 handler to
+        // fall back to, so it goes native whatever surface tag the call carries.
         return true;
     }
     // A shared name follows the surface the caller declared for this call. The tag is
@@ -688,11 +700,19 @@ fn tools_payload(service: &ComputerUseLinux, params: &Map<String, Value>) -> Val
     if is_window2_surface(&surface) {
         // The window2 surface is served by the native X11 backend, so its schemas come
         // from there rather than from the crate's own MCP table.
+        // Exactly the official thirteen, and deliberately not one method more. The DSH
+        // `wait_for` extension is dispatchable on this backend but is advertised from the JS
+        // tool plane instead of here, because this list is the official contract and is pinned
+        // to exactly thirteen by three independent gates (`window2.rs`'s own parity test, the
+        // Python `test_computer_surface_is_exactly_the_official_thirteen`, and the headless
+        // `run-window2-e2e.sh` driver). Adding a name here would break the parity claim rather
+        // than extend it; `dshExtensions` records what else this backend serves.
         return json!({
             "tools": crate::x11::window2::tool_definitions(),
             "surface": if surface == "all" { "all" } else { "window2" },
+            "dshExtensions": [crate::x11::waitfor::WAIT_FOR_TOOL],
             "hidden": {
-                "note": "Linux window2 exposes the official 13 methods on the native X11 backend; the seven sky.window tools are also available.",
+                "note": "Linux window2 exposes the official 13 methods on the native X11 backend; the DSH wait_for extension and the seven sky.window tools are served alongside them.",
                 "skyWindowTools": SURFACE_TOOLS,
             },
         });
@@ -857,6 +877,9 @@ async fn window2_health() -> Value {
         );
     }
     methods.push("get_window_state");
+    // DSH extension on the same surface/dispatcher; listed here so health describes what this
+    // backend actually serves, with `refused` staying empty because nothing is refused.
+    methods.push(crate::x11::waitfor::WAIT_FOR_TOOL);
     if capabilities.composite.is_none() {
         degraded.push(
             "XComposite is missing, so get_window_state falls back to a direct window read and              occluding windows may appear in the screenshot"

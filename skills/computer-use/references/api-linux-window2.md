@@ -219,3 +219,103 @@ P1 caller needs no change.
    - **Observe**: Call `get_window_state({ window, include_text: true })` to read visible controls and fresh element indexes.
    - **Act**: Perform exactly one indexed action (e.g. `click({ window, element_index: 4 })` or `set_value({ window, element_index: 4, value: "text" })`).
    - **Refresh**: Call `get_window_state` again before taking the next action.
+
+---
+
+## `computer_use_wait_for` (DSH extension, not an official method)
+
+The official thirteen are unchanged. This is a **DSH addition** that rides the same Linux
+window2 dispatcher: helper method `wait_for`, exposed to the model as `computer_use_wait_for`.
+It never appears in the official 13-method table (`window2::WINDOW2_TOOLS`), and the parity
+assertions that pin that table still hold.
+
+### Why it exists
+
+The observation cadence, not the driving, is what a desktop task costs. "Act, sleep,
+screenshot, look, act" spends one image-carrying model round trip per step, and each of those
+is seconds. When the next action only depends on **whether** something appeared, the model does
+not need to look at all -- it needs the helper to watch. `computer_use_wait_for` does the
+watching in the helper and answers once.
+
+### Parameters
+
+```ts
+interface WaitForInput {
+  window: Window;           // same shape as get_window_state: { app, id }
+  text_substring?: string;  // wait until this text appears in the tree (case-insensitive)
+  element_name?: string;    // wait until an element whose name contains this appears
+  gone?: string;            // wait until this text is no longer in the tree
+  timeout_ms?: number;      // default 5000, hard ceiling 20000
+  poll_ms?: number;         // default 250, floor 50
+}
+
+interface WaitForResult {
+  ok: true;
+  matched: boolean;         // false on timeout, which is NOT an error
+  elapsedMs: number;
+  polls: number;
+  condition: { kind: "text_substring" | "element_name" | "gone"; value: string };
+  timeoutMs: number;
+  pollMs: number;
+  timeoutClamped?: true;    // present when timeout_ms exceeded the ceiling
+  maxTimeoutMs?: number;
+  observedPresent?: boolean; // `gone` only: whether the text was ever seen
+  match?: { index: number; role: string; name?: string };
+  nodes?: number;
+  treeGeneration?: number;
+  emptyTree?: true;         // every poll saw an empty tree (no AT-SPI bridge)
+  source?: string;          // the AT-SPI app the tree was read from, e.g. "pid 4194308"
+  warning?: string;
+  note?: string;
+  window: Window;
+  backend: "x11-native";
+}
+```
+
+**Exactly one** of `text_substring`, `element_name` or `gone` must be given. Zero or more than
+one is refused structurally before any polling, so a malformed call costs nothing.
+
+```json
+{ "id": 7, "method": "call",
+  "params": { "name": "wait_for", "surface": "computer",
+    "arguments": { "window": { "app": "org.gnome.TextEditor", "id": 4194308 },
+                   "text_substring": "Save", "timeout_ms": 8000 } } }
+```
+
+### Semantics that matter
+
+1. **A timeout is not an error.** The call returns `ok: true` with `matched: false` and a `note`.
+   A condition that never held is a fact about the UI; the caller decides what to do next.
+2. **`gone` is two-phase.** The wait first checks whether the text is *present* (`observedPresent`).
+   If it is, it waits for it to leave -- `matched: true`, `observedPresent: true`. If the text was
+   never there during the presence grace (`min(poll_ms, 1000)` ms), the call answers immediately
+   with `matched: true` and `observedPresent: false`: the condition already holds, and the caller
+   is told it never watched the text go. It does not sit out the whole budget.
+3. **`timeout_ms` is clamped to 20000**, and `timeoutClamped: true` plus `maxTimeoutMs` are
+   reported. The ceiling is a contract: DSH aborts a tool call at its own ~25 s budget, so a
+   longer promise could not be kept and the clamp is surfaced rather than hidden.
+4. **The poll does not consume element indexes.** The waiter reads the accessibility tree
+   without advancing the cached generation, so element indexes from your last
+   `get_window_state` stay valid across a wait.
+5. **A window with no accessibility tree is reported, not silently timed out.** If every poll
+   returns an empty tree, the result carries `emptyTree: true` and a `warning` -- the app has no
+   AT-SPI bridge, so no text or element condition can ever match.
+6. **A tree that cannot be read at all is refused structurally**, not reported as `matched: false`.
+   A false negative would send the caller down the wrong path.
+
+### When to use it
+
+Use it right after any action whose effect is not immediate: a launch, a save, a search, a dialog
+that must open or close. Prefer it over `sleep` followed by another `get_window_state`: it costs
+one call and no screenshot instead of one image round trip per step.
+
+```ts
+await click({ window, element_index: 4 });        // "Save"
+const saved = await computer_use_wait_for({
+  window, gone: "Saving...", timeout_ms: 10000,
+});
+if (!saved.matched) { /* still saving: observe and decide */ }
+```
+
+Only the Linux native helper serves this method. On the Windows backend the tool is not
+registered, and the Linux P1 `linux` surface does not advertise it either.

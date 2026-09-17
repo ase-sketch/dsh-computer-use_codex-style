@@ -19,7 +19,13 @@ import {
   PYTHON_SURFACES,
   LINUX_CALLS,
   WINDOW2_CALLS,
+  WINDOW2_EXTENSION_CALLS,
+  WAIT_FOR_DEFAULT_TIMEOUT_MS,
+  WAIT_FOR_MAX_TIMEOUT_MS,
+  WAIT_FOR_METHOD,
+  WAIT_FOR_TOOL_NAME,
   callParamsFor,
+  isWindow2Call,
   isWindow2Surface,
 } from '../src/sidecar.js'
 
@@ -290,6 +296,188 @@ test('P2-ROUTING WINDOW2_CALLS definition and usesPython routing under backend=l
     usesPython('call', { name: 'batch_actions', arguments: { actions: [{ name: 'create_tab' }] } }, 'linux'),
     true,
   )
+})
+
+test('P2-ROUTING the DSH wait extension rides the window2 face without joining the official thirteen', () => {
+  // The official set stays exactly thirteen: its size is the parity claim, and every
+  // surface test depends on it.
+  assert.equal(WINDOW2_CALLS.size, 13)
+  assert.equal(WINDOW2_CALLS.has(WAIT_FOR_METHOD), false, 'wait_for is not an official method')
+  assert.ok(WINDOW2_EXTENSION_CALLS.has(WAIT_FOR_METHOD))
+  assert.equal(isWindow2Call(WAIT_FOR_METHOD), true)
+  assert.equal(isWindow2Call('click'), true)
+  assert.equal(isWindow2Call('create_tab'), false)
+
+  // On the Linux desktop backend it must reach the native helper. This is the assertion
+  // that matters: a wait routed to the Python engine would be an unknown method there, and
+  // the model would see a failure instead of a wait.
+  assert.equal(engineFor('call', { name: WAIT_FOR_METHOD }, 'linux'), 'native')
+  assert.equal(usesPython('call', { name: WAIT_FOR_METHOD }, 'linux'), false)
+})
+
+test('P2-BUDGET a wait_for request is budgeted from its own timeout, not the flat 10 s', () => {
+  const sidecar = new Sidecar({ backend: 'linux', surface: 'computer' })
+  const defaultBudget = sidecar.timeoutFor('call', { name: WAIT_FOR_METHOD, arguments: {} })
+  const askedBudget = sidecar.timeoutFor('call', { name: WAIT_FOR_METHOD, arguments: { timeout_ms: 12000 } })
+  const hugeBudget = sidecar.timeoutFor('call', { name: WAIT_FOR_METHOD, arguments: { timeout_ms: 600000 } })
+
+  // The default wait is 5 s, so a flat 10 s budget would be *just* enough by luck; the
+  // asked-for one would not be, and a transport timeout kills the helper.
+  assert.ok(defaultBudget > WAIT_FOR_DEFAULT_TIMEOUT_MS)
+  assert.ok(askedBudget > 12000, 'the budget must cover the requested wait: ' + askedBudget)
+  // The worst case must stay under the harness budget that aborts tool calls.
+  assert.ok(hugeBudget <= 25000, 'the budget must stay under the 25 s harness abort: ' + hugeBudget)
+  assert.ok(hugeBudget >= WAIT_FOR_MAX_TIMEOUT_MS, 'the ceiling must be fully reachable')
+
+  // Other methods keep the flat budget.
+  assert.equal(sidecar.timeoutFor('call', { name: 'click' }), 10000)
+})
+
+test('P2-CONTRACT the JS wait tool and the helper method describe the same contract', async () => {
+  const src = root => fs.readFileSync(path.join(pluginRoot, 'src', root), 'utf8')
+  const helper = fs.readFileSync(
+    path.join(pluginRoot, 'helper-linux', 'src', 'x11', 'waitfor.rs'),
+    'utf8',
+  )
+
+  // The names must match across the wire, or every call would be an unknown method.
+  assert.ok(helper.includes('pub const WAIT_FOR_TOOL: &str = "' + WAIT_FOR_METHOD + '"'))
+  // The ceilings must be one number, not two that can drift. Read them out of the Rust
+  // source and compare numerically: `20_000` and `20000` are the same ceiling, while a
+  // genuinely different value still fails.
+  const rustNumber = name => {
+    const match = new RegExp('pub const ' + name + ': u64 = ([0-9_]+)').exec(helper)
+    assert.ok(match, 'the helper must declare ' + name)
+    return Number(match[1].replace(/_/g, ''))
+  }
+  assert.equal(rustNumber('MAX_TIMEOUT_MS'), WAIT_FOR_MAX_TIMEOUT_MS)
+  assert.equal(rustNumber('DEFAULT_TIMEOUT_MS'), WAIT_FOR_DEFAULT_TIMEOUT_MS)
+
+  // `wait_for` must not be smuggled into the official table.
+  const window2 = fs.readFileSync(path.join(pluginRoot, 'helper-linux', 'src', 'x11', 'window2.rs'), 'utf8')
+  const table = window2.slice(window2.indexOf('pub const WINDOW2_TOOLS'), window2.indexOf('];', window2.indexOf('pub const WINDOW2_TOOLS')))
+  assert.equal(/wait_for/.test(table), false, 'wait_for must not be in WINDOW2_TOOLS')
+
+  // The tool name carries the DSH extension prefix, like the other two extensions.
+  assert.equal(WAIT_FOR_TOOL_NAME, 'computer_use_wait_for')
+  assert.ok(src('tool.js').includes('WAIT_FOR_TOOL_NAME'))
+})
+
+test('P2-TOOL-REGISTRATION the wait tool is registered on Linux window2 and absent on Windows', async () => {
+  const register = async config => {
+    const registered = new Map()
+    const dshComputerUse = {
+      config,
+      tools: async () => ({
+        tools: EXPECTED_WINDOW2_TOOLS.map(name => ({
+          name,
+          description: name,
+          parameters: { type: 'object', properties: {} },
+        })),
+      }),
+      call: async (name, args) => ({ ok: true, name, value: { done: name }, images: [] }),
+      health: async () => ({ ok: true }),
+      releaseOverlay: async () => ({ ok: true }),
+      shutdownSidecar: async () => {},
+      experience: undefined,
+    }
+    const ctx = {
+      dshComputerUse,
+      on() {},
+      effect(fn) { fn() },
+      get() { return undefined },
+      tools: { register(tool) { registered.set(tool.name, tool) } },
+      systemPrompt: { section() {} },
+    }
+    await applyTools(ctx, ToolConfig({}))
+    return registered
+  }
+
+  // Linux window2 (the backend this helper serves) exposes it.
+  const linux = await register({ backend: 'linux', surface: 'computer' })
+  assert.ok(linux.has(WAIT_FOR_TOOL_NAME), 'Linux window2 must expose ' + WAIT_FOR_TOOL_NAME)
+  assert.ok(linux.has('computer_use_health'))
+
+  // The Windows helper has no such method, so advertising it there would name a call that
+  // always fails.
+  const windows = await register({ backend: 'windows', surface: 'computer' })
+  assert.equal(windows.has(WAIT_FOR_TOOL_NAME), false, 'Windows must not expose a Linux-only method')
+
+  // The schema must describe the three conditions and both knobs. `defineTool` compiles the
+  // implicit property map into a model-facing JSON Schema, so the result is the standard
+  // object shape: the properties live under `properties`.
+  const tool = linux.get(WAIT_FOR_TOOL_NAME)
+  assert.equal(tool.parameters.type, 'object')
+  for (const key of ['window', 'text_substring', 'element_name', 'gone', 'timeout_ms', 'poll_ms']) {
+    assert.ok(tool.parameters.properties[key], 'the wait tool must document ' + key)
+  }
+  // `defineTool` compiles the implicit property map down to `{ type, properties }` and carries
+  // neither `required` nor a top-level `additionalProperties`, so the required-window contract
+  // lives in `execute` instead -- see the dispatch test, which asserts that a call without a
+  // window never reaches the helper.
+  assert.deepEqual(Object.keys(tool.parameters).sort(), ['properties', 'type'])
+})
+
+test('P2-DISPATCH the wait tool sends the helper method and the exact arguments', async () => {
+  const calls = []
+  const registered = new Map()
+  const dshComputerUse = {
+    config: { backend: 'linux', surface: 'computer' },
+    tools: async () => ({
+      tools: EXPECTED_WINDOW2_TOOLS.map(name => ({
+        name,
+        description: name,
+        parameters: { type: 'object', properties: {} },
+      })),
+    }),
+    currentTurnIdFor: () => 'turn-7',
+    call: async (name, args, signal, meta) => {
+      calls.push({ name, args, meta })
+      return { ok: true, value: { matched: true, elapsedMs: 12, polls: 1 }, images: [] }
+    },
+    health: async () => ({ ok: true }),
+    releaseOverlay: async () => ({ ok: true }),
+    shutdownSidecar: async () => {},
+  }
+  const ctx = {
+    dshComputerUse,
+    on() {},
+    effect(fn) { fn() },
+    get() { return undefined },
+    tools: { register(tool) { registered.set(tool.name, tool) } },
+    systemPrompt: { section() {} },
+  }
+  await applyTools(ctx, ToolConfig({}))
+  const tool = registered.get(WAIT_FOR_TOOL_NAME)
+
+  const args = { window: { id: 42, app: 'gedit' }, text_substring: 'Ready', timeout_ms: 8000 }
+  const result = await tool.execute(args, { agent: { id: 's' } })
+
+  // The helper method, not the tool name: the prefix exists only on the model-facing side.
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].name, WAIT_FOR_METHOD)
+  assert.deepEqual(calls[0].args, args)
+  assert.equal(calls[0].meta.turnId, 'turn-7', 'the turn id must be the session turn, not the call')
+  assert.equal(result.matched, true)
+
+  // Exactly one condition is enforced before the helper is bothered.
+  calls.length = 0
+  await assert.rejects(
+    () => tool.execute({ window: { id: 42 } }, { agent: { id: 's' } }),
+    /exactly one of text_substring, element_name or gone/,
+  )
+  await assert.rejects(
+    () => tool.execute({ window: { id: 42 }, text_substring: 'a', gone: 'b' }, { agent: { id: 's' } }),
+    /exactly one of text_substring, element_name or gone/,
+  )
+  assert.equal(calls.length, 0, 'a malformed call must not reach the helper')
+
+  // A missing window is refused too.
+  await assert.rejects(
+    () => tool.execute({ text_substring: 'Ready' }, { agent: { id: 's' } }),
+    /needs a window object/,
+  )
+  assert.equal(calls.length, 0)
 })
 
 test('P2-TOOL-REGISTRATION backend=linux with surface=computer registers 13 window2 tools', async () => {
