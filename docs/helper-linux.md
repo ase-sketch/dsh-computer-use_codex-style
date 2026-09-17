@@ -63,9 +63,13 @@ Targeting uses string identifiers (`app` parameter):
 2. **First-run Portal Authorization**:
    - Under Wayland, the first screenshot or input call triggers an interactive desktop authorization popup asking the user to confirm screen sharing and remote desktop access.
    - If the user dismisses or denies the prompt, the helper returns an authorization error.
-3. **AT-SPI Accessibility**:
-   - `get_app_state` retrieves accessibility information via AT-SPI2 D-Bus.
-   - Ensure AT-SPI is enabled in your desktop environment (e.g. `gsettings set org.gnome.desktop.interface toolkit-accessibility true`).
+3. **AT-SPI Accessibility (strongly recommended)**:
+   - `get_app_state` and window2's `get_window_state` read widget trees via the AT-SPI2 D-Bus interface. With AT-SPI enabled, element-index targeting, text extraction, and `set_value` all work and driving is noticeably faster and more accurate. Without it the agent degrades to "screenshot + coordinate clicking", which is slower and vision-model dependent.
+   - How to enable, per desktop:
+     - **KDE Plasma**: enable screen-reader support in System Settings → Accessibility (this starts the AT-SPI bus); if Qt apps still do not expose their trees, set `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1` (e.g. via a script in `~/.config/plasma-workspace/env/`).
+     - **GNOME**: `gsettings set org.gnome.desktop.interface toolkit-accessibility true`.
+     - Make sure `at-spi2-core` is installed (it ships by default on most distributions).
+   - Electron apps (QQ, VS Code, etc.) often stay silent even with the bus up; launch them with `--force-renderer-accessibility` to expose their trees. When they stay silent, the visual fallback path applies — that is expected.
 
 ## 5. Capability Boundaries & Graceful Degradation
 

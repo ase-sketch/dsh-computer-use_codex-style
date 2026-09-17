@@ -63,9 +63,13 @@ P1 阶段 `helper-linux` 对外暴露 7 个核心工具：
 2. **Portal 首次交互授权弹窗**：
    - 在 Wayland 桌面（如 GNOME, KDE Plasma）中，**首次调用** `screenshot` 或输入工具时，系统桌面会弹出原生授权确认框（询问是否允许屏幕共享与远程控制）。
    - 首次运行时需提示用户在图形界面中点击“允许/共享”。若用户拒绝，调用将返回权限拒绝错误。
-3. **AT-SPI 无障碍服务要求**：
-   - `get_app_state` 通过 AT-SPI2 D-Bus 接口提取应用控件树。
-   - 需确保桌面环境开启了无障碍接口（例如 GNOME 下执行 `gsettings set org.gnome.desktop.interface toolkit-accessibility true`）。
+3. **AT-SPI 无障碍服务要求（强烈建议开启）**：
+   - `get_app_state` / window2 的 `get_window_state` 通过 AT-SPI2 D-Bus 接口提取应用控件树；开启后元素索引（element_index）定位、文本抽取、`set_value` 全部可用，操控明显更快更准。不开也能用，但 Agent 只能退化为"截图 + 坐标点击"，慢且依赖视觉模型。
+   - 开启方法（按桌面环境）：
+     - **KDE Plasma**：「系统设置 → 辅助功能」中启用屏幕阅读器支持（会拉起 AT-SPI 总线）；Qt 应用若仍不暴露控件树，设置环境变量 `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1`（可写入 `~/.config/plasma-workspace/env/` 下的 .sh）。
+     - **GNOME**：`gsettings set org.gnome.desktop.interface toolkit-accessibility true`。
+     - 确保已安装 `at-spi2-core`（绝大多数发行版默认自带）。
+   - Electron 应用（QQ、VS Code 等）即使总线已开也常不上报控件树，需带 `--force-renderer-accessibility` 启动才会暴露；不上报时按降级策略走视觉路径，属正常现象。
 
 ## 5. 能力边界与降级策略
 
