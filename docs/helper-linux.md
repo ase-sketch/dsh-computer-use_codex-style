@@ -81,6 +81,13 @@ Targeting uses string identifiers (`app` parameter):
 - **Permission Rejection**:
   - If Portal permissions are withheld, the helper fails fast with an explicit permission rejection message rather than hanging silently.
 
+### Advanced: CDP Pathway for Electron Applications (Reference Only)
+
+- **Mechanism & Interface Exposure**: Electron-based desktop applications (such as QQ, VS Code, etc.) expose standard Chrome DevTools Protocol (CDP) endpoints and DOM interfaces when launched with the `--remote-debugging-port=<port>` flag.
+- **Pairing with Browser Tools**: When enabled, agents can leverage the plugin's browser automation channel (by loading the `computer-use-browser` skill) for direct DOM manipulation, bypassing visual screenshot round-trips and pixel coordinates for an order-of-magnitude faster execution.
+- **Positioned as Optional Reference Path**: This is strictly an **optional reference pathway**, not a built-in default. It requires users to manually restart the target application with debugging flags; the standard default remains native desktop Computer Use tools.
+- **Security Notice**: Launching an application with a remote debugging port broadens its attack surface (any local process connecting to the port can inspect and manipulate the session). Use **exclusively in trusted local environments**, and never expose debug ports on untrusted or shared networks.
+
 ## 6. P2 Progress: window2 Full Surface (X11 Parity)
 
 P2 expands `helper-linux` from the 7-tool sky.window subset to the **13-tool Codex window2 full surface**, matching Windows window2 parity.
