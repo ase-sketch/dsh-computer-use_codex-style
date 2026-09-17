@@ -297,6 +297,7 @@ pub fn scroll(id: u64, x: i32, y: i32, scroll_x: i32, scroll_y: i32) -> Result<S
     let (root_x, root_y) = clamp_to_screen(window::to_root_coordinates(id, x, y)?)?;
     let vertical = notch_count(scroll_y);
     let horizontal = notch_count(scroll_x);
+    check_notch_budget(vertical, horizontal)?;
     let vertical_button = if scroll_y < 0 { 4 } else { 5 };
     let horizontal_button = if scroll_x < 0 { 6 } else { 7 };
     with_connection(|connection| {
@@ -319,6 +320,40 @@ pub fn scroll(id: u64, x: i32, y: i32, scroll_x: i32, scroll_y: i32) -> Result<S
     })?
 }
 
+/// How many wheel notches one call may emit, in total across both axes.
+///
+/// Each notch is two `xtest_fake_input` requests, and the helper serves one JSONL request
+/// at a time, so this is also a bound on how long one call can monopolise the session: 100
+/// notches is a couple of seconds, while the i32::MIN a caller can send would ask for 21
+/// million of them and block every later call -- including `interrupt` -- for minutes.
+const MAX_SCROLL_NOTCHES: u32 = 100;
+
+/// The same ceiling in the units the caller sends (`scrollX`/`scrollY`).
+const MAX_SCROLL_NOTCH_UNITS: u32 = MAX_SCROLL_NOTCHES * 100;
+
+/// Refuse a scroll whose notch count would monopolise the helper.
+///
+/// Split out from [`scroll`] so the ceiling itself is testable without an X server -- a
+/// test that only asserts the constant would keep passing if this check were dropped.
+fn check_notch_budget(vertical: u32, horizontal: u32) -> Result<()> {
+    let total = vertical + horizontal;
+    if total > MAX_SCROLL_NOTCHES {
+        bail!(
+            "scrollX/scrollY ask for {total} wheel notch(es); the ceiling is {MAX_SCROLL_NOTCHES} per \
+             call. One notch is 100 units, so {MAX_SCROLL_NOTCHES} is {MAX_SCROLL_NOTCH_UNITS} \
+             units. Each notch is two X requests, and this helper answers one request at a \
+             time, so a larger value would block every other call for minutes. Scroll in \
+             several calls instead."
+        );
+    }
+    Ok(())
+}
+
+/// Wheel notches for one axis delta.
+///
+/// One notch is 100 units, and a delta is truncated rather than rounded: 150 units is one
+/// notch, not two. The floor of one keeps a small-but-nonzero delta visible, which is what
+/// a caller asking to "scroll a little" means.
 fn notch_count(delta: i32) -> u32 {
     if delta == 0 {
         return 0;
@@ -510,6 +545,29 @@ pub fn probe() -> Result<(u8, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ceiling exists because each notch is two X requests and the helper answers one
+    /// request at a time: without it, `scrollY: -2147483648` means 21,474,836 notches and
+    /// every later call -- `interrupt` included -- waits behind them.
+    #[test]
+    fn the_worst_case_scroll_delta_is_a_refusal_not_a_twenty_million_notch_run() {
+        assert_eq!(notch_count(i32::MIN), 21_474_836);
+        assert!(
+            notch_count(i32::MIN) > MAX_SCROLL_NOTCHES,
+            "the extreme the guard exists for must exceed the ceiling"
+        );
+        // The guard itself, not just the constant: this is the assertion that fails if
+        // the ceiling stops being applied.
+        let error = check_notch_budget(notch_count(i32::MIN), 0).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("21,474,836") || message.contains("21474836"), "{message}");
+        assert!(message.contains("ceiling is 100"), "{message}");
+        assert!(message.contains("Scroll in several calls"), "{message}");
+        // The ceiling is per call across both axes, so two legal axes can still exceed it.
+        assert!(check_notch_budget(100, 0).is_ok());
+        assert!(check_notch_budget(60, 60).is_err());
+        assert!(check_notch_budget(0, 0).is_ok());
+    }
 
     #[test]
     fn a_bare_letter_parses_as_its_own_chord() {
