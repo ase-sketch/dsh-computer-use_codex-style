@@ -351,7 +351,7 @@ pub fn press_key(id: u64, chord: &str) -> Result<String> {
     with_connection(|connection| {
         let raw = connection.inner();
         for code in &modifiers {
-            tap(raw, *code, None)?;
+            press_key_code(raw, *code)?;
         }
         tap(raw, key, None)?;
         // Modifiers are released in reverse so Control+Shift cannot leave Shift held.
