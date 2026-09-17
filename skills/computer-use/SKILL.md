@@ -35,7 +35,7 @@ Key characteristics on Linux:
 2. **Coordinate-based input (no element_index)**: All click and scroll actions operate on window-relative coordinates `{ x, y }`. Accessibility element indexes (`element_index`), `drag`, and direct `set_value` are Windows window2 capabilities not present in Linux P1.
 3. **Session permissions (Portal)**: Under Wayland, the first call to `screenshot` or input tools will display an OS-level XDG Desktop Portal permission prompt. The user must grant screen capture / remote desktop access.
 4. **AT-SPI accessibility**: `get_app_state` reads AT-SPI accessibility trees. If disabled in the desktop session, `text` will be omitted or empty, and actions should rely on visual screenshots.
-5. **Electron applications (QQ, WeChat, VS Code, etc.)**: Accessibility trees (AT-SPI) are often incomplete or disabled. When element indexes or text trees are unavailable or empty, falling back to visual inspection via screenshots and coordinate-based clicking (`click`) is the normal and expected path.
+5. **Electron applications (QQ, WeChat, VS Code, etc.)**: On a desktop with AT-SPI enabled, Electron apps usually DO expose usable trees (verified on QQ: hundreds of named nodes) — always TRY the tree first with `include_text: true`. Never conclude "this app has no accessibility tree" from a call that didn't request text, and expect many unnamed `panel` nodes (normal for Electron; look for named buttons/statics). Only when the requested tree genuinely comes back empty is the visual screenshot + coordinate-click path the expected fallback.
 
 For full type definitions and examples, see `references/api-linux.md`.
 
@@ -102,7 +102,7 @@ again solely for inspection.
 - **Locating a specific target (查找特定对象)**: When asked to find a specific object inside an application (such as a contact in QQ/WeChat, a file in a file manager, or a setting), read [Efficiency tactics (高效战术)](#efficiency-tactics-高效战术) first. Never default to visual scrolling when search mechanisms exist.
 - **Enumerate before acting**: Always check `list_windows` before attempting to open any app. If the target window already exists, activate and reuse it via `activate_window`; never attempt to launch it again.
 - **Never launch GUI apps through the shell**: Do not use bash/shell commands to launch GUI applications; use `launch_app` only when `list_windows` confirms the app is not already running.
-- **Electron applications (e.g. QQ, WeChat, VS Code)**: AT-SPI or UIA accessibility trees and element indexes may be unavailable or empty. Falling back to visual screenshot inspection and coordinate-based clicking (`click({window, screenshotId, x, y})`) is the standard, expected path.
+- **Electron applications (e.g. QQ, WeChat, VS Code)**: try the accessibility tree first (`include_text: true`) — it is often richer than expected on AT-SPI-enabled desktops. Visual screenshot inspection + coordinate clicking (`click({window, screenshotId, x, y})`) is the fallback for when the tree is genuinely empty, not the default assumption.
 - Treat `get_window_state` as an expensive point-in-time snapshot. Batch related inputs, then capture a new state when you need to verify progress or when focus, layout, modality, or element indexes may have changed.
 - Element indexes are valid only for the accessibility state that produced them. Refresh accessibility state after any action that may change the visible element tree.
 - By default `get_window_state({window})` captures and displays a screenshot and returns `accessibility: null`. This is the best default for desktop apps with weak accessibility trees.
@@ -147,8 +147,10 @@ When automating tasks that involve locating a specific object or driving desktop
 
 ### Verification & IM safety (视觉核验与 IM 纪律)
 - **Visual diff verification (行动后视觉差分核实)**: Confirm expected visual changes (cursor focus, tab selection, modal dismissal) in the post-action screenshot; if the screen did not change, the action failed—never assume success.
+- **Tree-diff verification (树差分核验)**: When the accessibility tree is available, verify action outcomes by diffing two text-tree observations instead of capturing a screenshot — which nodes appeared/changed/disappeared is cheaper and less ambiguous than comparing pixels. Reserve screenshot verification for visual-only signals (colors, images, layout) and the IM recipient check.
+- **Wait, don't poll (等待而非轮询)**: When waiting for a UI state (a window opening, search results loading, a contact's chat appearing), prefer a helper-side wait (e.g. `wait_for` when available) or a single settled re-observation after a `waitMs` pause over repeated screenshot polling — every poll is a model round-trip with an image attached.
 - **IM send discipline (IM 发送与换行纪律)**: In IM clients (QQ/WeChat), `Return` sends the message while `Shift+Return` inserts a line break.
-- **IM recipient double-check (IM 发送前双重核对)**: Because Electron IMs lack reliable accessibility trees, always visually verify in the screenshot that the active chat header matches the intended recipient before sending.
+- **IM recipient double-check (IM 发送前双重核对)**: Electron IM trees can be partial, so before sending always verify the active chat header matches the intended recipient — via the tree when it names the header, otherwise a screenshot.
 
 ### Recovery & convergence (脱困与收敛)
 - **Escape from traps (Escape 键脱困)**: Press `Escape` first whenever unexpected popups, autocomplete dropdowns, or context menus trap keyboard focus.
