@@ -381,6 +381,50 @@ export const WINDOW2_CALLS = new Set([
 ])
 
 /**
+ * The DSH extension method that rides the window2 face on the Linux helper.
+ *
+ * Kept in its own set rather than appended to `WINDOW2_CALLS`: that set is the official
+ * thirteen and its exact size (13) is asserted by the routing tests, so folding an extension
+ * into it would make "the official surface" and "what this backend serves" the same list
+ * again -- which is the distinction the parity tests exist to keep.
+ */
+export const WINDOW2_EXTENSION_CALLS = new Set(['wait_for'])
+
+/** Whether a `call` name is served by the native window2 dispatcher on Linux. */
+export function isWindow2Call(name) {
+  return WINDOW2_CALLS.has(name) || WINDOW2_EXTENSION_CALLS.has(name)
+}
+
+/**
+ * The helper's `wait_for` method name and the JS tool name that exposes it.
+ *
+ * The transport budget below is derived from these, so they live with it. `tool.js` imports
+ * this contract rather than restating it: the schema the model reads and the budget the
+ * transport enforces must describe the same wait.
+ */
+export const WAIT_FOR_METHOD = 'wait_for'
+export const WAIT_FOR_TOOL_NAME = 'computer_use_wait_for'
+
+/**
+ * The ceiling the helper enforces on `timeout_ms` (see `helper-linux/src/x11/waitfor.rs`).
+ *
+ * Mirrored here because the transport has to size its own budget against it, and pinned to the
+ * Rust constant by a test so the two cannot drift apart.
+ */
+export const WAIT_FOR_MAX_TIMEOUT_MS = 20_000
+
+/** The helper's default wait when the caller names no `timeout_ms`. */
+export const WAIT_FOR_DEFAULT_TIMEOUT_MS = 5_000
+
+/**
+ * Extra transport budget on top of the wait itself, for one tree read and the round trip.
+ *
+ * Deliberately small: the resulting worst case must stay under the harness's own ~25 s tool
+ * budget, since the harness aborting a call is a heavier event than a clean timeout.
+ */
+export const WAIT_FOR_BUDGET_MARGIN_MS = 2_000
+
+/**
  * Whether a surface name denotes the window2 face (the official 13-method surface).
  *
  * `windows`/`window2` are the host's other spellings for the same face; `all` is handled
@@ -420,7 +464,7 @@ export function engineFor(method, params = {}, backend) {
   if (method !== 'call') return 'native'
   const name = String(params.name || '')
   if (!name) return 'native'
-  if (backend === 'linux' && (LINUX_CALLS.has(name) || WINDOW2_CALLS.has(name))) return 'native'
+  if (backend === 'linux' && (LINUX_CALLS.has(name) || isWindow2Call(name))) return 'native'
   if (name === 'batch_actions') {
     const actions = params.arguments && Array.isArray(params.arguments.actions) ? params.arguments.actions : []
     if (actions.some(item => item && item.name && !NATIVE_CALLS.has(String(item.name)))) return 'python'
@@ -954,6 +998,19 @@ export class Sidecar {
    */
   timeoutFor(method, params) {
     const base = Number(this.config.timeoutMs) > 0 ? Number(this.config.timeoutMs) : 10_000
+    if (method === 'call' && params && params.name === 'wait_for') {
+      // A wait is *supposed* to take as long as its own timeout_ms, so the flat 10 s
+      // transport budget would kill the helper while it was still doing exactly what it was
+      // asked to do -- and a transport timeout destroys the warm helper. The budget is
+      // therefore derived from the wait itself, plus a margin for the tree read and the round
+      // trip. The helper clamps timeout_ms to 20 s (x11/waitfor.rs), so this stays under the
+      // harness's own ~25 s tool budget; the margin is deliberately small for that reason.
+      const asked = Number(params.arguments && params.arguments.timeout_ms)
+      const wait = Number.isFinite(asked) && asked > 0
+        ? Math.min(asked, WAIT_FOR_MAX_TIMEOUT_MS)
+        : WAIT_FOR_DEFAULT_TIMEOUT_MS
+      return wait + WAIT_FOR_BUDGET_MARGIN_MS
+    }
     if (method === 'call' && params && params.name === 'launch_app') {
       const launch = Number(this.config.launchAppTimeoutMs)
       return launch > 0 ? launch : 15_000

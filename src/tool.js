@@ -16,6 +16,12 @@ import {
   isDigestMethod,
   observationFor,
 } from './experience.js'
+import {
+  WAIT_FOR_DEFAULT_TIMEOUT_MS,
+  WAIT_FOR_MAX_TIMEOUT_MS,
+  WAIT_FOR_METHOD,
+  WAIT_FOR_TOOL_NAME,
+} from './sidecar.js'
 
 export const name = 'tool-computer-use'
 export const inject = ['tools', 'dshComputerUse', 'systemPrompt']
@@ -273,6 +279,13 @@ async function registerDesktop(ctx, state, config) {
   const enabled = new Set(config.enabledTools || [])
   const extras = harness.filter(spec => enabled.has(spec.name))
   ensureHealthAndExperience(ctx, state, config)
+  // The DSH wait primitive rides this face, and only this one: its helper method is served
+  // by the native X11 window2 dispatcher, so it exists on the Linux backend alone. The
+  // Windows helper has no such method, and advertising it there would name a call that
+  // always fails.
+  if (String(ctx.dshComputerUse?.config?.backend || '').toLowerCase() === 'linux') {
+    registerWaitForTool(ctx, config)
+  }
   const exposed = desktops.concat(extras)
   const known = new Set(state.exposedNames || [])
   for (const spec of exposed) {
@@ -405,6 +418,152 @@ function healthTool(ctx, state, config, startError) {
 
 /** Name of the DSH-only experience tool (not one of the official 13 methods). */
 export const EXPERIENCE_TOOL_NAME = 'computer_use_experience'
+
+/**
+ * The DSH wait primitive's names and limits.
+ *
+ * Re-exported from `sidecar.js`, which owns the request budget they size, so the schema the
+ * model is shown and the transport that has to honour it cannot drift apart. `wait_for` is
+ * the helper method; `computer_use_wait_for` is the tool name, whose prefix matches the other
+ * two DSH extensions (`computer_use_health`, `computer_use_experience`) so an extension is
+ * recognisable by name.
+ */
+export { WAIT_FOR_METHOD, WAIT_FOR_TOOL_NAME, WAIT_FOR_MAX_TIMEOUT_MS }
+
+/**
+ * The DSH wait primitive, as a tool.
+ *
+ * Registered from JavaScript rather than advertised by the helper's `tools` reply on
+ * purpose. The helper's window2 catalog is the official 13-method table plus this one
+ * extension, and the parity tests (Rust `the_surface_is_exactly_the_official_thirteen_methods`,
+ * Python `test_computer_surface_is_exactly_the_official_thirteen`) pin that table. Registering
+ * the extension here keeps the helper catalog and the official contract independent, which is
+ * also how `computer_use_health` and `computer_use_experience` are exposed.
+ *
+ * It is async and goes through `ctx.dshComputerUse.call`, so the call travels the same
+ * transport (and the same request budget and interrupt handling) as every other tool.
+ *
+ * @param {object} ctx plugin context
+ * @param {object} config resolved tool config
+ * @returns {object} a `defineTool` result
+ */
+function waitForTool(ctx, config) {
+  return defineTool({
+    name: WAIT_FOR_TOOL_NAME,
+    description:
+      'Wait until a UI state appears or disappears, then answer once. This is a DSH extension, ' +
+      'not one of the official window2 methods. It exists to keep the observation cadence off ' +
+      'the model: instead of repeated get_window_state calls (each one an image-carrying round ' +
+      'trip), this asks the helper to watch the accessibility tree itself and return a verdict. ' +
+      'Give exactly one of text_substring (this text appears), element_name (an element whose ' +
+      'name contains this appears) or gone (this text disappears). A timeout is not an error: it ' +
+      'returns matched=false, and the caller decides what to do next. Reach for it right after ' +
+      'an action whose effect is not immediate -- a launch, a save, a search, a dialog -- ' +
+      'instead of sleeping and re-observing.',
+    parameters: {
+      window: {
+        type: 'object',
+        description: 'Window object from list_apps() or list_windows() to watch.',
+        // defineTool's compiler requires every object node to state this explicitly; it
+        // builds a closed model-facing schema, so an omission is an error rather than a
+        // default. `false` matches the window2 window object, which is closed.
+        additionalProperties: false,
+        properties: {
+          app: { type: 'string', description: 'App identifier for the app that owns this window.' },
+          id: { type: 'number', description: 'Window id from list_windows().' },
+          title: { type: 'string', description: 'User-visible window title when available.' },
+        },
+      },
+      text_substring: {
+        type: 'string',
+        description: 'Wait until this text appears in the accessibility tree (case-insensitive).',
+      },
+      element_name: {
+        type: 'string',
+        description: 'Wait until an element whose name contains this text appears (case-insensitive).',
+      },
+      gone: {
+        type: 'string',
+        description:
+          'Wait until this text is no longer in the accessibility tree. If it was never there, ' +
+          'the call answers matched=true with observedPresent=false rather than waiting out the budget.',
+      },
+      timeout_ms: {
+        type: 'number',
+        description:
+          'How long to wait in milliseconds (default 5000, hard ceiling ' + WAIT_FOR_MAX_TIMEOUT_MS +
+          '; a larger value is clamped and reported as timeoutClamped).',
+      },
+      poll_ms: {
+        type: 'number',
+        description: 'How often to read the tree in milliseconds (default 250, floored at 50).',
+      },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render(_args, value) {
+        return [{ type: 'text', text: stringifyCompact(value) }]
+      },
+    },
+    async execute(args, exec) {
+      const input = args && typeof args === 'object' ? args : {}
+      const conditions = ['text_substring', 'element_name', 'gone'].filter(
+        key => input[key] !== undefined && input[key] !== null && String(input[key]) !== '',
+      )
+      if (conditions.length !== 1) {
+        throw new Error(
+          WAIT_FOR_TOOL_NAME + ' takes exactly one of text_substring, element_name or gone; got ' +
+          (conditions.length === 0 ? 'none' : conditions.join(' + ')),
+        )
+      }
+      const window = input.window
+      if (!window || typeof window !== 'object' || window.id === undefined || window.id === null) {
+        throw new Error(WAIT_FOR_TOOL_NAME + ' needs a window object with an id (from list_windows())')
+      }
+      const meta = turnMetaFor(ctx.dshComputerUse, exec)
+      // `surface` is stamped so the helper routes this window-shaped call to its window2
+      // dispatcher even though the name is not in the official thirteen: the native call
+      // path decides window2-vs-P1 by surface tag for shared names, and `wait_for` is
+      // window2-only, but declaring the face keeps the intent explicit on the wire.
+      const result = await ctx.dshComputerUse.call(
+        WAIT_FOR_METHOD,
+        input,
+        exec.signal,
+        { ...meta, surface: 'computer' },
+      )
+      if (!result?.ok && result?.error) throw new Error(String(result.error))
+      return result?.value ?? result
+    },
+    isConcurrencySafe() {
+      // A wait holds the helper's single request slot while it polls, and the desktop is
+      // inherently sequential: two waits must not interleave.
+      return false
+    },
+    presentCall(args) {
+      return {
+        card: 'generic',
+        title: WAIT_FOR_TOOL_NAME,
+        rawInput: args && typeof args === 'object' ? args : {},
+      }
+    },
+  })
+}
+
+/**
+ * Register the wait primitive, degrading instead of failing, exactly like the experience
+ * tool: a schema mistake in one extension must never take the whole preset down with it.
+ *
+ * Only registered on the window2 face -- the helper method is served by the native X11
+ * window2 dispatcher, so advertising it on the P1 `linux` surface would name a method that
+ * surface cannot serve.
+ */
+function registerWaitForTool(ctx, config) {
+  try {
+    ctx.tools.register(waitForTool(ctx, config))
+  } catch (error) {
+    console.error('[dsh-computer-use] skipped tool ' + WAIT_FOR_TOOL_NAME + ': ' + error)
+  }
+}
 
 /**
  * Register the experience tool, degrading instead of failing: a schema mistake in this

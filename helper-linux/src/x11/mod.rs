@@ -14,6 +14,7 @@ pub mod connection;
 pub mod element;
 pub mod input;
 pub mod launch;
+pub mod waitfor;
 pub mod window;
 pub mod window2;
 

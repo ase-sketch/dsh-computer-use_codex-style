@@ -17,7 +17,7 @@ use serde_json::{json, Map, Value};
 use crate::rmcp::model::{CallToolResult, Content};
 
 use super::capture;
-use super::{element, input, launch, window};
+use super::{element, input, launch, waitfor, window};
 
 /// The thirteen window2 methods, in the official order.
 pub const WINDOW2_TOOLS: &[&str] = &[
@@ -356,6 +356,10 @@ pub fn dispatch(name: &str, arguments: Map<String, Value>) -> Result<CallToolRes
         "drag" => drag(&arguments),
         "perform_secondary_action" => perform_secondary_action(&arguments),
         "activate_window" => activate_window(&arguments),
+        // DSH extension, deliberately NOT part of WINDOW2_TOOLS: that table is the official
+        // thirteen and a test pins it exactly. It is routed through this dispatcher so a single
+        // place owns every window-shaped call on the native backend.
+        waitfor::WAIT_FOR_TOOL => waitfor::wait_for(&arguments),
         other => Err(format!(
             "{}unsupported window2 method {other}",
             crate::protocol::UNSUPPORTED_METHOD_PREFIX
