@@ -362,6 +362,46 @@ fn capture_reads_the_window_content_not_the_screen() {
     assert_eq!(captured.origin_y, 30);
 }
 
+/// A refused `ShmGetImage` must fall through to the synchronous `GetImage`, not fail.
+///
+/// The refusal is injected: Xvfb has no compositor and its drawables answer `ShmGetImage`,
+/// so the one case that used to give up cannot be produced on demand. What is under test is
+/// that the fallback still returns real pixels and names the shortfall, instead of turning a
+/// readable drawable into "screenshot unavailable".
+#[test]
+#[ignore = "needs Xvfb; run with DSH_CUA_XVFB_TEST=1 cargo test --test xvfb_window2 -- --ignored --test-threads=1"]
+fn a_refused_shm_read_falls_back_to_the_synchronous_get_image() {
+    if skip_if_disabled() {
+        return;
+    }
+    let Some(fixture) = fixture(107) else {
+        eprintln!("skipping: Xvfb could not be started on :107");
+        return;
+    };
+    fixture.paint(0x00ff0000);
+    let window = u32::from(fixture.window);
+
+    let (png, note) = with_display(&fixture, || {
+        dsh_computer_use::x11::capture::read_drawable_png_with_refused_shm_for_test(
+            window, 300, 200,
+        )
+    })
+    .expect("a refused SHM read must still produce an image");
+
+    // The image is real, not a placeholder: the painted rectangle must be in it.
+    let decoded = image::load_from_memory(&png)
+        .expect("the fallback must return a decodable PNG")
+        .to_rgba8();
+    assert_eq!((decoded.width(), decoded.height()), (300, 200));
+    assert!(
+        count_colour(&decoded, RED) > 0,
+        "the painted rectangle must survive the fallback"
+    );
+    // And the shortfall is still named, so a caller can tell which route ran.
+    let note = note.expect("the SHM shortfall must be reported");
+    assert!(note.contains("GetImage"), "note was: {note}");
+}
+
 /// What composite capture actually guarantees, measured rather than assumed.
 ///
 /// The guarantee is "the window's own pixels, not the overlapping window's": a capture of

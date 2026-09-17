@@ -39,7 +39,7 @@ use x11rb::connection::Connection as _;
 use x11rb::protocol::composite::{ConnectionExt as _, Redirect};
 use x11rb::protocol::shm::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{
-    ConnectionExt as _, CreateGCAux, Gcontext, ImageFormat, Pixmap, Window,
+    ConnectionExt as _, CreateGCAux, Gcontext, ImageFormat, MapState, Pixmap, Window,
 };
 use x11rb::rust_connection::RustConnection;
 
@@ -220,6 +220,38 @@ impl Drop for RedirectGuard<'_> {
     }
 }
 
+/// The window exists but no capture can be taken of it, and the caller must act first.
+///
+/// Typed rather than a bare `anyhow` so the window2 surface can turn it into a
+/// structured, actionable error instead of a bare `degraded` string: a model that reads
+/// "activate the window, then retry" can recover on its own, while "screenshot
+/// unavailable" only tells it to give up.
+#[derive(Debug, Clone)]
+pub struct CaptureUnavailable {
+    pub reason: String,
+    pub action: String,
+    pub suggested_tool: String,
+}
+
+impl std::fmt::Display for CaptureUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.action, self.reason)
+    }
+}
+
+impl std::error::Error for CaptureUnavailable {}
+
+/// A refused `ShmGetImage` collapses to this, so the fallback can be driven in a test:
+/// a real session refuses the SHM read only for an unmapped drawable, and a headless
+/// Xvfb fixture has no compositor to reproduce that refusal on demand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadMode {
+    /// Try `ShmGetImage`, then the synchronous `GetImage` when the server refuses it.
+    ShmThenSync,
+    /// `ShmGetImage` always fails here, as it does for an unmapped drawable.
+    RefuseShm,
+}
+
 /// Hold the single capture slot.
 ///
 /// Captures are the one place in this module where a shared *mutable* server-side
@@ -240,7 +272,7 @@ pub fn capture_window(id: u64) -> Result<WindowCapture> {
     let geometry = window::window_geometry(id)?;
     let frame_extents = window::frame_extents(id).unwrap_or_default();
     with_connection(|connection| {
-        capture_on(connection, window, geometry, frame_extents)
+        capture_on(connection, window, geometry, frame_extents, ReadMode::ShmThenSync)
     })?
 }
 
@@ -249,6 +281,7 @@ fn capture_on(
     window: Window,
     geometry: WindowGeometry,
     frame_extents: FrameExtents,
+    read_mode: ReadMode,
 ) -> Result<WindowCapture> {
     if geometry.width == 0 || geometry.height == 0 {
         bail!(
@@ -267,19 +300,73 @@ fn capture_on(
         .map(|cookie| cookie.reply().is_ok())
         .unwrap_or(false);
 
+    // Both no-side-effect routes are tried first, in order: the composite pixmap (which can
+    // yield a hidden window's pixels when a compositor is holding its redirection) and then
+    // a direct read. Only when both have failed is the window's viewability consulted, and
+    // only to explain the failure: nothing about the window is changed on this path.
     let composite = if composite_available {
-        capture_composited(connection, window, geometry, frame_extents)
+        capture_composited(connection, window, geometry, frame_extents, read_mode)
     } else {
         Err(anyhow!(
             "the X server provides no Composite extension, so occluding windows may appear in the image"
         ))
     };
-    fall_back_to_direct(
+    match fall_back_to_direct(
         composite,
-        || capture_direct_png(connection, window, geometry),
+        || capture_direct_png(connection, window, geometry, read_mode),
         geometry,
         frame_extents,
-    )
+    ) {
+        Ok(capture) => Ok(capture),
+        // An unmapped window is the one failure that has an answer: the server is not
+        // showing it, so it has no pixels for either request, and the caller has to bring
+        // it back before a capture can mean anything. That is worth more to a model than a
+        // bare "screenshot unavailable", which only tells it to give up.
+        Err(error) if !window_is_viewable(connection, window).unwrap_or(true) => {
+            Err(anyhow::Error::new(CaptureUnavailable {
+                reason: format!(
+                    "window 0x{:x} is not viewable (it is hidden or minimized), so the X \
+                     server has no pixels to read for it: {error}",
+                    u32::from(window)
+                ),
+                action: "call activate_window for this window, then call get_window_state again"
+                    .to_string(),
+                suggested_tool: "activate_window".to_string(),
+            }))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether the server is showing this window, i.e. it is mapped and its parents are.
+///
+/// `MapState::VIEWABLE` is the server's own answer to "could you read pixels for this
+/// drawable from the screen", which is exactly the question a capture is about.
+fn window_is_viewable(connection: &X11Connection, window: Window) -> Result<bool> {
+    let attributes = connection
+        .inner()
+        .get_window_attributes(window)
+        .map_err(|error| anyhow!("get_window_attributes could not be sent: {error}"))?
+        .reply()
+        .map_err(|error| anyhow!("get_window_attributes was refused: {error:?}"))?;
+    Ok(attributes.map_state == MapState::VIEWABLE)
+}
+
+/// Testing seam: read one drawable with the SHM read forced to fail.
+///
+/// The synchronous fallback cannot be reached on demand — Xvfb has no compositor and its
+/// drawables answer `ShmGetImage` — so [`ReadMode::RefuseShm`] injects exactly the refusal a
+/// real server produces, and this runs the rest of the path unchanged against a live server.
+#[doc(hidden)]
+pub fn read_drawable_png_with_refused_shm_for_test(
+    drawable: u32,
+    width: u16,
+    height: u16,
+) -> Result<(Vec<u8>, Option<String>)> {
+    with_connection(|connection| {
+        read_drawable_png(connection, drawable, width, height, ReadMode::RefuseShm)
+            .map(|read| (read.encoded.0, read.note))
+    })?
 }
 
 /// Prefer the occlusion-proof capture, and describe the shortfall honestly when it fails.
@@ -289,23 +376,29 @@ fn capture_on(
 /// window's redirection, which is not reproducible in the headless test session.
 fn fall_back_to_direct(
     composite: Result<WindowCapture>,
-    direct: impl FnOnce() -> Result<(Vec<u8>, u16, u16)>,
+    direct: impl FnOnce() -> Result<DrawableRead>,
     geometry: WindowGeometry,
     frame_extents: FrameExtents,
 ) -> Result<WindowCapture> {
     match composite {
         Ok(capture) => Ok(capture),
         Err(error) => {
-            let encoded = direct()?;
+            let read = direct()?;
             Ok(WindowCapture::from_encoded(
-                encoded,
+                read.encoded,
                 (geometry.width, geometry.height),
                 (geometry.x, geometry.y),
                 CaptureMethod::Direct,
-                Some(format!(
-                    "XComposite capture unavailable, fell back to a direct window read \
-                     (occluding windows may appear in the image): {error}"
-                )),
+                match read.note {
+                    Some(note) => Some(format!(
+                        "XComposite capture unavailable, fell back to a direct window read \
+                         (occluding windows may appear in the image): {error}; {note}"
+                    )),
+                    None => Some(format!(
+                        "XComposite capture unavailable, fell back to a direct window read \
+                         (occluding windows may appear in the image): {error}"
+                    )),
+                },
                 frame_extents,
             ))
         }
@@ -318,6 +411,7 @@ fn capture_composited(
     window: Window,
     geometry: WindowGeometry,
     frame_extents: FrameExtents,
+    read_mode: ReadMode,
 ) -> Result<WindowCapture> {
     let raw = connection.inner();
     let guard = RedirectGuard::arm(raw, window)?;
@@ -339,7 +433,7 @@ fn capture_composited(
     raw.flush()
         .map_err(|error| anyhow!("flush after naming the window pixmap failed: {error}"))?;
 
-    let encoded = read_drawable_png(connection, pixmap, geometry.width, geometry.height);
+    let encoded = read_drawable_png(connection, pixmap, geometry.width, geometry.height, read_mode);
     // Free the named pixmap before dropping the redirection; the resource belongs to
     // this client, and leaving it behind would leak one pixmap per capture.
     let freed = raw
@@ -347,15 +441,15 @@ fn capture_composited(
         .map_err(|error| anyhow!("free_pixmap could not be sent: {error}"))
         .and_then(|cookie| cookie.check().map_err(|error| anyhow!("{error:?}")));
     drop(guard);
-    let encoded = encoded?;
+    let read = encoded?;
     freed?;
 
     Ok(WindowCapture::from_encoded(
-        encoded,
+        read.encoded,
         (geometry.width, geometry.height),
         (geometry.x, geometry.y),
         CaptureMethod::Composite,
-        None,
+        read.note,
         frame_extents,
     ))
 }
@@ -365,18 +459,52 @@ fn capture_direct_png(
     connection: &X11Connection,
     window: Window,
     geometry: WindowGeometry,
-) -> Result<(Vec<u8>, u16, u16)> {
-    read_drawable_png(connection, window, geometry.width, geometry.height)
+    read_mode: ReadMode,
+) -> Result<DrawableRead> {
+    read_drawable_png(connection, window, geometry.width, geometry.height, read_mode)
+}
+
+/// One read of a drawable: the encoded image, plus why a lesser route was taken.
+///
+/// The note is `Some` only when MIT-SHM was available but the server refused `ShmGetImage`
+/// for this drawable and the synchronous `GetImage` answered instead. That is a real
+/// shortfall — every pixel travels in the reply instead of through shared memory — and it
+/// is invisible in the pixels, so it has to be carried rather than inferred.
+struct DrawableRead {
+    encoded: (Vec<u8>, u16, u16),
+    note: Option<String>,
 }
 
 /// `ShmGetImage` on any drawable and encode the pixels as PNG.
+///
+/// A refused `ShmGetImage` is not automatically the end of the read: the synchronous
+/// `GetImage` is a different request, and there are drawables the server reads for one but
+/// not the other (a pixmap whose depth the SHM path rejects, a server whose MIT-SHM is
+/// advertised but unusable for this drawable). The fallback costs one request and can turn a
+/// failed capture into a real one, so it is always tried before giving up.
+///
+/// It is **not** a cure for an unmapped window. Measured on a real X11 session: an unmapped
+/// drawable is refused by `ShmGetImage` with `BadMatch` and by plain `GetImage` with
+/// `BadMatch` too, because there are no pixels to read for it at all. That case is handled in
+/// [`capture_on`], which reports an actionable refusal rather than an empty image.
 fn read_drawable_png(
     connection: &X11Connection,
     drawable: u32,
     width: u16,
     height: u16,
-) -> Result<(Vec<u8>, u16, u16)> {
+    read_mode: ReadMode,
+) -> Result<DrawableRead> {
     let raw = connection.inner();
+    if read_mode == ReadMode::RefuseShm {
+        return Ok(DrawableRead {
+            encoded: read_drawable_png_slow(connection, drawable, width, height)?,
+            note: Some(
+                "MIT-SHM read unavailable for this drawable, used the synchronous GetImage: \
+                 X11Error(error_kind: Match, error_code: 8, MIT-SHM GetImage)"
+                    .to_string(),
+            ),
+        });
+    }
     let shm_available = connection
         .inner()
         .shm_query_version()
@@ -384,7 +512,10 @@ fn read_drawable_png(
         .map(|cookie| cookie.reply().is_ok())
         .unwrap_or(false);
     if !shm_available {
-        return read_drawable_png_slow(connection, drawable, width, height);
+        return Ok(DrawableRead {
+            encoded: read_drawable_png_slow(connection, drawable, width, height)?,
+            note: None,
+        });
     }
 
     let bytes_per_pixel = connection.bytes_per_pixel();
@@ -411,15 +542,30 @@ fn read_drawable_png(
         0,
     )
     .map_err(|error| anyhow!("shm_get_image could not be sent: {error}"))?
-    .reply()
-    .map_err(|error| anyhow!("shm_get_image was refused: {error:?}"));
+    .reply();
 
     let detached = raw
         .shm_detach(shmseg)
         .map_err(|error| anyhow!("shm_detach could not be sent: {error}"))
         .and_then(|cookie| cookie.check().map_err(|error| anyhow!("{error:?}")));
-    let reply = reply?;
-    detached?;
+
+    let reply = match reply {
+        Ok(reply) => {
+            detached?;
+            reply
+        }
+        Err(error) => {
+            // The segment has to go back before the slow path allocates nothing of its own;
+            // a detach failure here cannot change the outcome the caller cares about.
+            let _ = detached;
+            return Ok(DrawableRead {
+                encoded: read_drawable_png_slow(connection, drawable, width, height)?,
+                note: Some(format!(
+                    "MIT-SHM read unavailable for this drawable, used the synchronous GetImage: {error:?}"
+                )),
+            });
+        }
+    };
 
     let depth = reply.depth;
     if depth != 24 && depth != 32 {
@@ -433,7 +579,10 @@ fn read_drawable_png(
             pixels.len()
         );
     }
-    encode_png(pixels, width, height, bytes_per_pixel)
+    Ok(DrawableRead {
+        encoded: encode_png(pixels, width, height, bytes_per_pixel)?,
+        note: None,
+    })
 }
 
 /// Fallback capture for a server without MIT-SHM: plain `GetImage` into the reply.
@@ -536,7 +685,14 @@ pub fn capture_root() -> Result<WindowCapture> {
             Ok(cookie) => cookie.check().map_err(|error| anyhow!("{error:?}")),
             Err(error) => Err(anyhow!("{error}")),
         };
-        let encoded = read_drawable_png(connection, connection.root(), width, height);
+        let encoded = read_drawable_png(
+            connection,
+            connection.root(),
+            width,
+            height,
+            ReadMode::ShmThenSync,
+        )
+        .map(|read| read.encoded);
         if let Ok(cookie) = raw.free_gc(gc) {
             let _ = cookie.check();
         }
@@ -644,7 +800,12 @@ mod tests {
         let pixels = [0x00u8, 0x00, 0xff, 0x00, 0xff, 0x00, 0x00, 0x00];
         let capture = fall_back_to_direct(
             Err(anyhow!("composite_redirect_window was refused: BadAccess")),
-            || encode_png(&pixels, 2, 1, 4),
+            || {
+                Ok(DrawableRead {
+                    encoded: encode_png(&pixels, 2, 1, 4)?,
+                    note: None,
+                })
+            },
             geometry,
             FrameExtents::default(),
         )
@@ -689,6 +850,24 @@ mod tests {
         .unwrap();
         assert_eq!(capture.method, CaptureMethod::Composite);
         assert!(capture.degraded.is_none());
+    }
+
+    #[test]
+    fn a_capture_with_no_pixels_to_read_names_the_action_that_unblocks_it() {
+        // A window the server is not showing is the one case no read can rescue: the
+        // answer must be an actionable refusal, not a bare "screenshot unavailable" and
+        // never an empty image the model would take for a real screenshot.
+        let error = CaptureUnavailable {
+            reason: "window 0x1 is not viewable (it is hidden or minimized)".to_string(),
+            action: "call activate_window for this window, then call get_window_state again"
+                .to_string(),
+            suggested_tool: "activate_window".to_string(),
+        };
+        assert!(error.to_string().contains("activate_window"), "{error}");
+        assert!(error.to_string().contains("not viewable"), "{error}");
+        // It is a real Error, so it can travel through `anyhow` without losing its type.
+        let boxed: Box<dyn std::error::Error> = Box::new(error);
+        assert!(boxed.downcast_ref::<CaptureUnavailable>().is_some());
     }
 
     #[test]

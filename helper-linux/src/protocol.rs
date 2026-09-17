@@ -219,13 +219,20 @@ pub fn pack_call_result(
     }
 
     if let Some(structured) = result.structured_content.clone() {
-        if !texts.is_empty() && !images.is_empty() {
-            // Structured output plus a screenshot: keep both without inventing keys.
-            return (
-                json!({ "value": structured, "content": Value::Array(texts) }),
-                images,
-            );
-        }
+        // Structured output is *the* value, screenshot or not.
+        //
+        // This used to nest the structured payload under a second "value" key whenever
+        // the call also carried an image. get_window_state is the only call that does
+        // both, so it was the only one affected -- and it was affected on every
+        // successful capture: the state object (window, screenshots, accessibility)
+        // landed at result.value.value, leaving result.value.screenshots empty while
+        // the pixels still rode in result.images. The consumer reads
+        // result.value.screenshots, so the model got a screenshot it could not click
+        // with and no entry to name it by. Measured on a real session: every visible
+        // window returned an empty screenshots array plus one orphaned PNG. The text
+        // blocks are dropped here because they are the caption for the same payload
+        // (json_result_with_image writes structured.to_string()), never a second,
+        // different result.
         return (structured, images);
     }
 
@@ -384,6 +391,36 @@ mod tests {
         result.structured_content = Some(json!({"apps": [{"id": "x"}]}));
         let (value, _) = pack_call_result(&result);
         assert_eq!(value["apps"][0]["id"], json!("x"));
+    }
+
+    /// The caption of a screenshot-bearing call must stay at the top level of `value`.
+    ///
+    /// `get_window_state` is the only call that sets `structured_content` *and* returns an
+    /// image, so it is the only one that used to hit the old "structured plus a screenshot"
+    /// branch. That branch nested the state object under a second `value` key, which meant
+    /// the consumer read `result.value.screenshots` as `[]` while the pixels still rode in
+    /// `result.images` — an image with no entry to click with. Measured on a real session:
+    /// every visible window returned `screenshots: []` with one orphaned PNG.
+    #[test]
+    fn a_screenshot_caption_is_not_nested_under_a_second_value_key() {
+        let state = json!({
+            "window": {"app": "Fixture", "id": 1},
+            "screenshots": [{"id": "0x1:0", "width": 10, "height": 20}],
+            "image": {"name": "screenshot-0", "mimeType": "image/png"},
+        });
+        let mut result = CallToolResult::success(vec![
+            Content::text(state.to_string()),
+            Content::image("QUJDRA==", "image/png"),
+        ]);
+        result.structured_content = Some(state.clone());
+        let (value, images) = pack_call_result(&result);
+        assert!(
+            value.get("value").is_none(),
+            "the caption must not be nested under a second value key: {value}"
+        );
+        assert_eq!(value["screenshots"][0]["id"], json!("0x1:0"), "{value}");
+        assert_eq!(value["window"]["app"], json!("Fixture"), "{value}");
+        assert_eq!(images.len(), 1);
     }
 
     #[test]
