@@ -331,6 +331,7 @@ const MAX_SCROLL_NOTCHES: u32 = 100;
 /// The same ceiling in the units the caller sends (`scrollX`/`scrollY`).
 const MAX_SCROLL_NOTCH_UNITS: u32 = MAX_SCROLL_NOTCHES * 100;
 
+
 /// Refuse a scroll whose notch count would monopolise the helper.
 ///
 /// Split out from [`scroll`] so the ceiling itself is testable without an X server -- a
@@ -385,21 +386,65 @@ pub fn press_key(id: u64, chord: &str) -> Result<String> {
     })?;
     with_connection(|connection| {
         let raw = connection.inner();
-        for code in &modifiers {
-            press_key_code(raw, *code)?;
-        }
-        tap(raw, key, None)?;
-        // Modifiers are released in reverse so Control+Shift cannot leave Shift held.
-        for code in modifiers.iter().rev() {
-            release_key(raw, *code)?;
-        }
-        raw.flush()
-            .map_err(|error| anyhow!("flush after key press failed: {error}"))?;
+        let held = with_modifiers_held(
+            &modifiers,
+            &|code| press_key_code(raw, code),
+            &|| tap(raw, key, None),
+            &|code| release_key(raw, code),
+        );
+        // The flush is not part of the hold/release bookkeeping: a request that cannot be
+        // queued is reported, but it is not a reason to leave a modifier down.
+        let flushed = raw
+            .flush()
+            .map_err(|error| anyhow!("flush after key press failed: {error}"));
+        held?;
+        flushed?;
         Ok(format!(
             "pressed {chord} ({} modifier(s)) with {activation}",
             modifiers.len()
         ))
     })?
+}
+
+/// Hold every modifier down, tap the key, and release what was pressed -- on every path.
+///
+/// Split out from [`press_key`] so the property that matters can be tested without an X
+/// server: a modifier that was pressed is released even when the tap, or a later press,
+/// failed. XTest modifiers are server-global state that no later request resets, so one
+/// stranded Control_L turns every subsequent keystroke -- the operator's included -- into
+/// a chord. The releases are therefore attempted unconditionally, in reverse order, and
+/// the *first* failure is what the caller is told about.
+fn with_modifiers_held(
+    modifiers: &[u8],
+    press: &dyn Fn(u8) -> Result<()>,
+    tap: &dyn Fn() -> Result<()>,
+    release: &dyn Fn(u8) -> Result<()>,
+) -> Result<()> {
+    let mut held: Vec<u8> = Vec::with_capacity(modifiers.len());
+    let mut failure: Option<anyhow::Error> = None;
+    for code in modifiers {
+        match press(*code) {
+            Ok(()) => held.push(*code),
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        }
+    }
+    if failure.is_none() {
+        failure = tap().err();
+    }
+    for code in held.iter().rev() {
+        if let Err(error) = release(*code) {
+            if failure.is_none() {
+                failure = Some(error);
+            }
+        }
+    }
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 /// Type text into the focused element of a window.
@@ -474,13 +519,20 @@ fn tap(
     if let Some(modifier) = modifier {
         press_key_code(raw, modifier)?;
     }
-    press_key_code(raw, keycode)?;
-    release_key(raw, keycode)?;
-    if let Some(modifier) = modifier {
-        release_key(raw, modifier)?;
-    }
+    // The same rule as `press_key`: once the modifier is down, every later step runs,
+    // and the first failure is reported after the release has been attempted.
+    let pressed = press_key_code(raw, keycode);
+    let released = release_key(raw, keycode);
+    let modifier_released = match modifier {
+        Some(keycode) => release_key(raw, keycode),
+        None => Ok(()),
+    };
+    pressed?;
+    released?;
+    modifier_released?;
     Ok(())
 }
+
 
 fn press_key_code(raw: &x11rb::rust_connection::RustConnection, keycode: u8) -> Result<()> {
     raw.xtest_fake_input(2, keycode, 0, 0, 0, 0, 0)
@@ -546,6 +598,97 @@ pub fn probe() -> Result<(u8, u16)> {
 mod tests {
     use super::*;
 
+    /// The regression 30f35dd fixed on the success path, asserted on the *failure* path:
+    /// a modifier that went down is released even when the tap never succeeded.
+    #[test]
+    fn a_failed_tap_still_releases_every_modifier_that_went_down() {
+        use std::cell::RefCell;
+        let events: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        let failure = with_modifiers_held(
+            &[37u8, 50u8],
+            &|code| {
+                events.borrow_mut().push(format!("press {code}"));
+                Ok(())
+            },
+            &|| {
+                events.borrow_mut().push("tap".to_string());
+                Err(anyhow!("the tap could not be sent"))
+            },
+            &|code| {
+                events.borrow_mut().push(format!("release {code}"));
+                Ok(())
+            },
+        );
+        assert!(failure.is_err(), "the tap failure must reach the caller");
+        assert_eq!(
+            events.into_inner(),
+            vec![
+                "press 37",
+                "press 50",
+                "tap",
+                // Reverse order, and both of them: this is the assertion that fails if the
+                // releases go back behind a `?`.
+                "release 50",
+                "release 37",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_modifier_that_failed_to_press_is_not_released_and_the_report_is_the_first_error() {
+        use std::cell::RefCell;
+        let events: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        let failure = with_modifiers_held(
+            &[37u8, 50u8],
+            &|code| {
+                events.borrow_mut().push(format!("press {code}"));
+                if code == 50 {
+                    return Err(anyhow!("the second press was refused"));
+                }
+                Ok(())
+            },
+            &|| {
+                events.borrow_mut().push("tap".to_string());
+                Ok(())
+            },
+            &|code| {
+                events.borrow_mut().push(format!("release {code}"));
+                Err(anyhow!("the release could not be sent"))
+            },
+        );
+        let message = failure.unwrap_err().to_string();
+        assert!(message.contains("second press"), "{message}");
+        let events = events.into_inner();
+        // Only what actually went down is released, and the tap never ran.
+        assert_eq!(events, vec!["press 37", "press 50", "release 37"]);
+    }
+
+    #[test]
+    fn a_successful_chord_presses_in_order_and_releases_in_reverse() {
+        use std::cell::RefCell;
+        let events: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        with_modifiers_held(
+            &[37u8, 50u8],
+            &|code| {
+                events.borrow_mut().push(format!("press {code}"));
+                Ok(())
+            },
+            &|| {
+                events.borrow_mut().push("tap".to_string());
+                Ok(())
+            },
+            &|code| {
+                events.borrow_mut().push(format!("release {code}"));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            events.into_inner(),
+            vec!["press 37", "press 50", "tap", "release 50", "release 37"]
+        );
+    }
+
     /// The ceiling exists because each notch is two X requests and the helper answers one
     /// request at a time: without it, `scrollY: -2147483648` means 21,474,836 notches and
     /// every later call -- `interrupt` included -- waits behind them.
@@ -567,6 +710,20 @@ mod tests {
         assert!(check_notch_budget(100, 0).is_ok());
         assert!(check_notch_budget(60, 60).is_err());
         assert!(check_notch_budget(0, 0).is_ok());
+    }
+
+    #[test]
+    fn a_delta_inside_the_ceiling_still_scrolls() {
+        assert_eq!(notch_count(0), 0);
+        // Truncated, not rounded: 150 units is one notch. The floor of one keeps a small
+        // delta visible, which is what "scroll a little" means.
+        assert_eq!(notch_count(150), 1);
+        assert_eq!(notch_count(-150), 1);
+        assert_eq!(notch_count(1), 1);
+        assert_eq!(notch_count(-100), 1);
+        assert_eq!(notch_count(10_000), 100);
+        assert_eq!(notch_count(-10_000), 100);
+        assert!(notch_count(10_000) + notch_count(0) <= MAX_SCROLL_NOTCHES);
     }
 
     #[test]
