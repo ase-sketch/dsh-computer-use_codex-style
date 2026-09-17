@@ -88,6 +88,13 @@ Targeting uses string identifiers (`app` parameter):
 - **Positioned as Optional Reference Path**: This is strictly an **optional reference pathway**, not a built-in default. It requires users to manually restart the target application with debugging flags; the standard default remains native desktop Computer Use tools.
 - **Security Notice**: Launching an application with a remote debugging port broadens its attack surface (any local process connecting to the port can inspect and manipulate the session). Use **exclusively in trusted local environments**, and never expose debug ports on untrusted or shared networks.
 
+### Advanced: Screenshot Capture Performance Reference
+
+- **The plugin's default path is already zero-fork capture**: on X11 the helper grabs frames through the XShm shared-memory extension (C-level API, in-process), with no subprocesses and no temp files — typically already faster than external screenshot tools. Most users need nothing extra.
+- **X11 external reference**: if you need screenshots outside the plugin (scripts, debugging), prefer libraries built on the XGetImage C bindings (e.g. Python `mss` or `python-xlib`) over repeatedly forking external processes like `import` or `scrot` — process startup dwarfs the capture itself.
+- **Wayland reference**: on Wayland prefer DMA-BUF / PipeWire based capture (the plugin uses the XDG Desktop Portal), or ad-hoc `grim -t jpeg -q 75` to emit mid-quality JPEG directly — JPEG is faster and smaller than PNG and plenty for "readable is enough" frames.
+- **Capture is not the bottleneck**: a measured model round-trip (image attached) costs about 9 seconds, while frame capture costs tens of milliseconds. For real speedups prefer AT-SPI text-tree observation and the `wait_for` primitive (see above) over shaving capture milliseconds.
+
 ## 6. P2 Progress: window2 Full Surface (X11 Parity)
 
 P2 expands `helper-linux` from the 7-tool sky.window subset to the **13-tool Codex window2 full surface**, matching Windows window2 parity.
