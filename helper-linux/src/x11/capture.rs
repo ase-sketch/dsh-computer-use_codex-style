@@ -757,7 +757,10 @@ mod tests {
         for index in 0..32u8 {
             pixels.extend_from_slice(&[index, index, index, 0xff]);
         }
-        let uncapped = encode_png(&pixels, 8, 4, 4).unwrap();
+        // Both reads take the shared env lock: `encode_png` reads the knob itself, so a
+        // baseline measured outside the lock is whatever another module's test had set at
+        // that instant, and this comparison would fail intermittently.
+        let uncapped = with_max_image_edge(None, || encode_png(&pixels, 8, 4, 4).unwrap());
         let capped_but_inert = with_max_image_edge(Some("8"), || encode_png(&pixels, 8, 4, 4).unwrap());
         assert_eq!(uncapped, capped_but_inert);
     }
@@ -768,7 +771,7 @@ mod tests {
         for index in 0..32u8 {
             pixels.extend_from_slice(&[index, index, index, 0xff]);
         }
-        let uncapped = encode_png(&pixels, 8, 4, 4).unwrap();
+        let uncapped = with_max_image_edge(None, || encode_png(&pixels, 8, 4, 4).unwrap());
         let zero = with_max_image_edge(Some("0"), || encode_png(&pixels, 8, 4, 4).unwrap());
         assert_eq!(uncapped, zero, "0 means no cap, exactly like the official helper");
     }
