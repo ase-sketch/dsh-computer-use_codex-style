@@ -22,6 +22,12 @@ path = "src/bin/codex-chrome-extension-host.rs"
 name = "codex-computer-use-cosmic"
 path = "src/bin/codex-computer-use-cosmic.rs"
 
+# The AT-SPI discovery step on its own, so the gated Xvfb suites can assert which
+# accessibility bus a process resolves to without opening a connection to it.
+[[bin]]
+name = "a11y-probe"
+path = "src/bin/a11y-probe.rs"
+
 [dev-dependencies]
 # The X11 integration test drives the server directly (XTEST injection, window
 # tree inspection) so the assertions are real round trips rather than mocks.

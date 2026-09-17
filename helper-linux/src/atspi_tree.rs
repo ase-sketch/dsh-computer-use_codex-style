@@ -3,6 +3,7 @@ use anyhow::{anyhow, Context, Result};
 use atspi::{
     proxy::{
         accessible::{AccessibleProxy, ObjectRefExt},
+        bus::BusProxy,
         proxy_ext::ProxyExt,
     },
     CoordType, ObjectRef, ObjectRefOwned, StateSet,
@@ -474,6 +475,25 @@ async fn connect() -> Result<AccessibilityConnection> {
     AccessibilityConnection::new()
         .await
         .context("failed to connect to AT-SPI bus")
+}
+
+/// The accessibility bus address the session bus currently advertises.
+///
+/// This is the discovery half of [`connect`], exposed on its own so a caller can tell *which*
+/// accessibility bus this process would use without opening a connection to it. The gated Xvfb
+/// suites use it to prove a private fixture stayed private: the address it resolves must live
+/// under the fixture's own runtime directory, never under the desktop's.
+pub async fn accessibility_bus_address() -> Result<String> {
+    hydrate_session_bus_env();
+    let session = zbus::Connection::session()
+        .await
+        .context("failed to connect to the session bus")?;
+    let bus = BusProxy::new(&session)
+        .await
+        .context("failed to open the org.a11y.Bus proxy")?;
+    bus.get_address()
+        .await
+        .context("the session bus did not answer org.a11y.Bus.GetAddress")
 }
 
 /// Open an `AccessibleProxy` for an object on the a11y bus.
