@@ -211,14 +211,13 @@ P1 caller needs no change.
 ## Element Index Scoping and Stability
 
 1. **Observation-bound Lifetime**:
-   Element indexes (`element_index`) returned in `accessibility.tree` are valid **only** for the exact observation that produced them.
-2. **Invalidation on Mutation**:
-   Any action that modifies application state (typing text, clicking buttons, scrolling views) or any external window event immediately invalidates existing element indexes.
+   Element indexes (`element_index`) returned in `accessibility.tree` are valid **only** for the exact observation that produced them. The tree carries the `generation` it was captured as, so the observation is a value you can hold on to rather than a claim you have to remember.
+2. **The helper enforces it**: pass `element_generation` (the `generation` of the observation you read the index out of) with an indexed `click`, `set_value` or `perform_secondary_action`. An index whose generation no longer matches the tree the window holds is **refused**, naming both numbers, instead of being resolved against the newer tree where that position may be a different control. The field is optional -- omit it and the index resolves against the latest tree, which is what every existing caller did -- but only an index that names its tree can be refused.
 3. **The Two-Cell Loop**:
    Always follow the canonical two-cell loop when using element indexing:
-   - **Observe**: Call `get_window_state({ window, include_text: true })` to read visible controls and fresh element indexes.
-   - **Act**: Perform exactly one indexed action (e.g. `click({ window, element_index: 4 })` or `set_value({ window, element_index: 4, value: "text" })`).
-   - **Refresh**: Call `get_window_state` again before taking the next action.
+   - **Observe**: Call `get_window_state({ window, include_text: true })` to read visible controls, fresh element indexes and the tree's `generation`.
+   - **Act**: Perform exactly one indexed action (e.g. `click({ window, element_index: 4, element_generation: <generation> })` or `set_value({ window, element_index: 4, element_generation: <generation>, value: "text" })`).
+   - **Refresh**: Call `get_window_state` again before taking the next action. A refusal that names two generations means exactly this: refresh, then act on an index from the new tree.
 
 ---
 

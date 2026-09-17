@@ -129,6 +129,7 @@ fn definitions() -> Vec<Value> {
                     "window": window_schema(),
                     "click_count": integer("Number of clicks to perform."),
                     "element_index": integer("Element index from the latest get_window_state() accessibility tree."),
+                    "element_generation": integer("Generation reported by the get_window_state() call whose tree this element_index came from; when supplied, an index from a superseded tree is refused instead of silently resolving to whatever now sits at that position."),
                     "mouse_button": { "type": "string", "enum": ["left", "right", "middle", "l", "r", "m"], "description": "Mouse button to click." },
                     "screenshotId": string("Optional screenshot id from get_window_state(); when supplied, it must be cached for the target window."),
                     "x": number("Window-relative X coordinate."),
@@ -188,6 +189,7 @@ fn definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "element_index": integer("Element index from the latest get_window_state() accessibility tree."),
+                    "element_generation": integer("Generation reported by the get_window_state() call whose tree this element_index came from; when supplied, an index from a superseded tree is refused instead of silently resolving to whatever now sits at that position."),
                     "value": string("Replacement value for the editable element."),
                     "window": window_schema(),
                 },
@@ -220,6 +222,7 @@ fn definitions() -> Vec<Value> {
                 "properties": {
                     "action": string("Secondary action label from get_window_state(), such as Raise, Scroll Up, Scroll Down, Scroll Left, Scroll Right, Expand, or Collapse; matching is case-insensitive."),
                     "element_index": integer("Element index from the latest get_window_state() accessibility tree."),
+                    "element_generation": integer("Generation reported by the get_window_state() call whose tree this element_index came from; when supplied, an index from a superseded tree is refused instead of silently resolving to whatever now sits at that position."),
                     "window": window_schema(),
                 },
                 "required": ["window", "element_index", "action"],
@@ -623,10 +626,12 @@ fn click(arguments: &Map<String, Value>) -> Result<CallToolResult, String> {
         .unwrap_or(1);
 
     if let Some(index) = optional_u32(arguments, "element_index").map_err(|e| e.to_string())? {
+        let generation = element::requested_generation(arguments)?;
         // An indexed click is an accessibility action, not a synthetic pointer event:
         // the widget is invoked the way the toolkit intends, which is also what makes
         // it work for elements whose bounds are not usable.
-        let node = element::resolve(id, index).map_err(|error| error.to_string())?;
+        let node = element::resolve(id, index, generation)
+            .map_err(|error| error.to_string())?;
         if let Some(action) = element::primary_action(&node) {
             let invocation = element::invoke_action_blocking(&node.object_ref, &action.name);
             return match invocation {
@@ -709,8 +714,9 @@ fn set_value(arguments: &Map<String, Value>) -> Result<CallToolResult, String> {
     let index = optional_u32(arguments, "element_index")
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "element_index is required".to_string())?;
+    let generation = element::requested_generation(arguments)?;
     let value_text = required_string(arguments, "value").map_err(|error| error.to_string())?;
-    let node = element::resolve(id, index).map_err(|error| error.to_string())?;
+    let node = element::resolve(id, index, generation).map_err(|error| error.to_string())?;
     if !node.supports_editable_text {
         return Err(refusal(
             "set_value",
@@ -751,7 +757,8 @@ fn perform_secondary_action(arguments: &Map<String, Value>) -> Result<CallToolRe
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "element_index is required".to_string())?;
     let action = required_string(arguments, "action").map_err(|error| error.to_string())?;
-    let node = element::resolve(id, index).map_err(|error| error.to_string())?;
+    let generation = element::requested_generation(arguments)?;
+    let node = element::resolve(id, index, generation).map_err(|error| error.to_string())?;
     let matched = element::matching_action(&node, action).ok_or_else(|| {
         refusal(
             "perform_secondary_action",
@@ -871,6 +878,66 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("activate_window"));
+    }
+
+
+    /// The age guard has to be advertised, or a caller cannot know it may name the tree it
+    /// read from. Every verb that takes an `element_index` accepts it.
+    #[test]
+    fn every_indexed_verb_advertises_the_element_generation_guard() {
+        let tools = definitions();
+        for name in ["click", "set_value", "perform_secondary_action"] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool["name"] == json!(name))
+                .unwrap_or_else(|| panic!("{name} must be advertised"));
+            let properties = &tool["parameters"]["properties"];
+            assert!(
+                properties["element_index"].is_object(),
+                "{name} must still take an element_index"
+            );
+            assert!(
+                properties["element_generation"].is_object(),
+                "{name} must advertise element_generation, or an index from a superseded tree cannot be refused"
+            );
+            // Optional on purpose: the official clients do not send it.
+            let required = tool["parameters"]["required"].as_array().unwrap();
+            assert!(
+                !required.iter().any(|field| field == "element_generation"),
+                "{name} must not require element_generation"
+            );
+        }
+    }
+
+    /// The refusal reaches the caller through the verb, not only through `resolve`.
+    #[test]
+    fn a_click_naming_a_superseded_generation_is_refused_not_resolved() {
+        let window_id: u64 = 0x51_0001;
+        {
+            let mut guard = crate::x11::element::cache_for_tests();
+            guard.snapshots.insert(
+                window_id,
+                crate::x11::element::ElementSnapshot {
+                    window_id,
+                    generation: 4,
+                    nodes: Vec::new(),
+                    captured_at_ms: 0,
+                    app_name: None,
+                },
+            );
+        }
+        let mut arguments = Map::new();
+        arguments.insert("window".to_string(), json!({"id": window_id, "app": "fixture"}));
+        arguments.insert("element_index".to_string(), json!(0));
+        arguments.insert("element_generation".to_string(), json!(3));
+        let error = click(&arguments).unwrap_err();
+        assert!(error.contains("generation 3"), "{error}");
+        assert!(error.contains("generation 4"), "{error}");
+        // Without the field the old permissive path stands, which is what keeps the
+        // official clients working.
+        arguments.remove("element_generation");
+        let error = click(&arguments).unwrap_err();
+        assert!(!error.contains("generation 3"), "{error}");
     }
 
     #[test]

@@ -46,6 +46,18 @@ pub enum ElementIndexError {
     NoSnapshot,
     /// The index is not in the tree that *was* captured.
     UnknownIndex(u32),
+    /// The index came from an older capture than the one this window now holds.
+    ///
+    /// The freshness rule the module documents: an index is only meaningful against the
+    /// observation that produced it, and a *newer* capture has replaced it in the cache.
+    StaleGeneration { requested: u64, current: u64 },
+}
+
+impl ElementIndexError {
+    /// The refusal a caller gets when it addresses an index from a superseded tree.
+    fn stale(requested: u64, current: u64) -> Self {
+        Self::StaleGeneration { requested, current }
+    }
 }
 
 impl std::fmt::Display for ElementIndexError {
@@ -61,6 +73,13 @@ impl std::fmt::Display for ElementIndexError {
                 "element_index {index} is not in the accessibility tree captured for this \
                  window; call get_window_state again and use an index from that tree"
             ),
+            ElementIndexError::StaleGeneration { requested, current } => write!(
+                f,
+                "element_index came from generation {requested}, but this window's tree has \
+                 moved on to generation {current}; the index now points at whatever occupies \
+                 that position in the newer tree, which may be a different control -- call \
+                 get_window_state again and use an index from that tree"
+            ),
         }
     }
 }
@@ -68,15 +87,21 @@ impl std::fmt::Display for ElementIndexError {
 impl std::error::Error for ElementIndexError {}
 
 #[derive(Debug, Default)]
-struct ElementCache {
-    snapshots: HashMap<u64, ElementSnapshot>,
-    generations: HashMap<u64, u64>,
+pub(crate) struct ElementCache {
+    pub(crate) snapshots: HashMap<u64, ElementSnapshot>,
+    pub(crate) generations: HashMap<u64, u64>,
 }
 
 static CACHE: OnceLock<Mutex<ElementCache>> = OnceLock::new();
 
 fn cache() -> &'static Mutex<ElementCache> {
     CACHE.get_or_init(|| Mutex::new(ElementCache::default()))
+}
+
+/// The cache handle, for tests in sibling modules that have to arrange a capture.
+#[cfg(test)]
+pub(crate) fn cache_for_tests() -> std::sync::MutexGuard<'static, ElementCache> {
+    cache().lock().unwrap_or_else(|error| error.into_inner())
 }
 
 fn now_ms() -> u64 {
@@ -103,12 +128,50 @@ pub fn current_generation(window_id: u64) -> Option<u64> {
 }
 
 /// Look up an index against the tree the caller most recently received.
-pub fn resolve(window_id: u64, index: u32) -> Result<AccessibilityNode, ElementIndexError> {
+///
+/// An index is a *position in one tree*, not an element identity: the same number in a
+/// newer tree is a different control. So a caller that names the generation it read from
+/// is refused rather than served with whatever now sits at that position. Callers that
+/// pass no generation keep the old permissive behaviour -- the index is resolved against
+/// the newest tree, which is what a caller holding no generation can mean.
+pub fn resolve(
+    window_id: u64,
+    index: u32,
+    generation: Option<u64>,
+) -> Result<AccessibilityNode, ElementIndexError> {
     let snapshot = cached(window_id).ok_or(ElementIndexError::NoSnapshot)?;
+    if let Some(requested) = generation {
+        if requested != snapshot.generation {
+            return Err(ElementIndexError::stale(requested, snapshot.generation));
+        }
+    }
     snapshot
         .node(index)
         .cloned()
-        .ok_or(ElementIndexError::UnknownIndex(index))
+        .ok_or_else(|| ElementIndexError::UnknownIndex(index))
+}
+
+/// The `element_generation` argument every indexed window2 verb shares.
+///
+/// Optional in the schema for the same reason `screenshotId` is: the official clients do
+/// not send it, and a required field would break them. When it *is* sent it has to be a
+/// positive integer -- a silent fallback would turn a typo into a node lookup against the
+/// wrong tree, which is exactly the failure this field exists to prevent.
+pub(crate) fn requested_generation(
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Option<u64>, String> {
+    match arguments.get("element_generation") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .filter(|generation| *generation > 0)
+            .map(Some)
+            .ok_or_else(|| {
+                "element_generation must be a positive integer: the generation from the \
+                 get_window_state() call whose tree this element_index came from"
+                    .to_string()
+            }),
+    }
 }
 
 /// Capture the accessibility tree for a window and make it the current generation.
@@ -359,7 +422,7 @@ mod tests {
 
     #[test]
     fn an_index_without_a_snapshot_is_refused_with_an_actionable_message() {
-        let error = resolve(0xdead_beef, 0).unwrap_err();
+        let error = resolve(0xdead_beef, 0, None).unwrap_err();
         assert_eq!(error, ElementIndexError::NoSnapshot);
         assert!(error.to_string().contains("get_window_state"));
     }
@@ -380,10 +443,66 @@ mod tests {
         guard.generations.insert(4242, 1);
         drop(guard);
 
-        assert!(resolve(4242, 0).is_ok());
-        let error = resolve(4242, 7).unwrap_err();
+        assert!(resolve(4242, 0, None).is_ok());
+        let error = resolve(4242, 7, None).unwrap_err();
         assert_eq!(error, ElementIndexError::UnknownIndex(7));
         assert!(error.to_string().contains("element_index 7"));
+    }
+
+
+    /// The regression this module exists for: an index read from tree N must not be
+    /// resolved against tree N+1, where the same position is a different control.
+    #[test]
+    fn an_index_from_a_superseded_generation_is_refused_with_the_numbers() {
+        let mut guard = cache().lock().unwrap();
+        guard.snapshots.insert(
+            5150,
+            ElementSnapshot {
+                window_id: 5150,
+                generation: 2,
+                nodes: vec![node_with(0, None, Vec::new())],
+                captured_at_ms: 0,
+                app_name: None,
+            },
+        );
+        guard.generations.insert(5150, 2);
+        drop(guard);
+
+        // The generation the caller read from is the one that works.
+        assert!(resolve(5150, 0, Some(2)).is_ok());
+        // An older generation is refused instead of silently resolving to whatever now
+        // occupies that position.
+        let error = resolve(5150, 0, Some(1)).unwrap_err();
+        assert_eq!(
+            error,
+            ElementIndexError::StaleGeneration {
+                requested: 1,
+                current: 2
+            }
+        );
+        let message = error.to_string();
+        assert!(message.contains("generation 1"), "{message}");
+        assert!(message.contains("generation 2"), "{message}");
+        assert!(message.contains("get_window_state"), "{message}");
+        // A caller that names no generation keeps the old behaviour.
+        assert!(resolve(5150, 0, None).is_ok());
+    }
+
+    #[test]
+    fn element_generation_must_be_a_positive_integer_when_it_is_sent() {
+        let arguments = |value: serde_json::Value| -> serde_json::Map<String, serde_json::Value> {
+            let mut map = serde_json::Map::new();
+            map.insert("element_generation".to_string(), value);
+            map
+        };
+        assert_eq!(requested_generation(&arguments(serde_json::json!(3))), Ok(Some(3)));
+        assert_eq!(requested_generation(&arguments(serde_json::json!(null))), Ok(None));
+        assert_eq!(requested_generation(&serde_json::Map::new()), Ok(None));
+        // A typo must not fall back to "no generation": that would resolve the index
+        // against the newest tree, which is the silent-wrong-element case.
+        assert!(requested_generation(&arguments(serde_json::json!(0))).is_err());
+        assert!(requested_generation(&arguments(serde_json::json!(-1))).is_err());
+        assert!(requested_generation(&arguments(serde_json::json!("2"))).is_err());
     }
 
     #[test]
